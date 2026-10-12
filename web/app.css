@@ -180,6 +180,7 @@ textarea.field { resize: none; min-height: 90px; line-height: 1.5; }
 .row .grow { flex: 1; min-width: 0; }
 .list-row { display: flex; align-items: center; gap: 14px; padding: 14px 2px; border-bottom: 1px solid var(--line); }
 .list-row:last-child { border-bottom: 0; }
+.list-row .grow { flex: 1; min-width: 0; }
 .list-row .t { font-weight: 600; }
 .list-row .s { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
@@ -577,3 +578,49 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 }
 .install-tip > b { color: var(--text); font-size: 15px; }
 .install-tip svg { color: var(--c-water); }
+
+/* ---------- notifications ---------- */
+.status-card b { font-size: 16px; font-weight: 700; display: block; }
+.status-card .s { font-size: 13px; color: var(--muted); margin-top: 2px; font-weight: 500; line-height: 1.45; }
+.status-card.on { background: linear-gradient(135deg, color-mix(in srgb, var(--c-habits) 12%, var(--surface)), var(--surface) 70%); }
+.status-card .btn-row { margin-top: 14px; justify-content: flex-start; }
+.status-card .btn-row .btn { flex: 0 0 auto; }
+.fine { font-size: 12.5px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+.hint { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); font-size: 13px; font-weight: 550; color: var(--text-2); }
+.hint.warn { background: color-mix(in srgb, var(--c-mood) 14%, transparent); color: color-mix(in srgb, var(--c-mood) 70%, var(--text)); }
+.hint .btn { flex-shrink: 0; }
+.day-dots { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.day-dots button { aspect-ratio: 1; max-width: 44px; width: 100%; justify-self: center; border-radius: 50%; font-size: 13px; font-weight: 700; background: var(--surface-2); color: var(--muted); transition: all .2s var(--spring); }
+.day-dots button.on { background: var(--acc); color: #fff; }
+.day-dots button:active { transform: scale(.9); }
+.time-chip { font-variant-numeric: tabular-nums; }
+
+/* ---------- focus v2 ---------- */
+.focus-on {
+  display: flex; align-items: center; gap: 8px; margin: 14px auto 0; max-width: 100%; width: fit-content;
+  padding: 9px 14px; border-radius: 999px; background: var(--surface); border: 1px dashed var(--line-2);
+  color: var(--text-2); font-size: 14px; font-weight: 600;
+}
+.focus-on span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.focus-on .ic:first-child { color: var(--acc); }
+.focus-ring { margin-top: 22px; border-radius: 50%; transition: box-shadow .6s var(--ease); }
+.focus-ring.run { box-shadow: 0 0 0 10px color-mix(in srgb, var(--acc) 6%, transparent), 0 0 60px color-mix(in srgb, var(--acc) 22%, transparent); animation: breathe 4s ease-in-out infinite; }
+@keyframes breathe { 50% { box-shadow: 0 0 0 16px color-mix(in srgb, var(--acc) 4%, transparent), 0 0 80px color-mix(in srgb, var(--acc) 30%, transparent); } }
+.timer-meta { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-top: 4px; }
+.rounds i.done { background: color-mix(in srgb, var(--acc) 55%, transparent); }
+.controls.labeled { align-items: flex-start; margin-bottom: 4px; }
+.controls.labeled button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.controls.labeled small { font-size: 11px; font-weight: 700; letter-spacing: .02em; }
+.controls.labeled .side { height: 64px; width: 64px; color: var(--text-2); }
+.controls.labeled .side[disabled] { opacity: .35; pointer-events: none; }
+.controls.labeled .main { width: 92px; height: 92px; }
+.chip.extend { margin: 6px auto 0; display: flex; width: fit-content; }
+.focus-today { display: flex; align-items: center; gap: 16px; margin-top: 22px; }
+.focus-today .t { font-weight: 700; }
+.focus-today .s { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.presets button { padding: 12px 8px; border-radius: 16px; background: var(--surface-2); border: 1.5px solid transparent; text-align: center; transition: all .2s; }
+.presets button b { display: block; font-size: 14px; }
+.presets button small { display: block; font-size: 11.5px; color: var(--muted); font-weight: 600; margin-top: 3px; }
+.presets button.on { border-color: var(--acc); background: color-mix(in srgb, var(--acc) var(--tint), transparent); }
+.presets button.on b { color: var(--acc); }

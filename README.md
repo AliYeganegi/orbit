@@ -28,3 +28,18 @@ Keep the signing key (`~/.android/orbit.keystore`); a different key forces an un
 ## Updating the iPhone version
 
 Edit `web/`, bump `VERSION` in `web/sw.js`, push to `main`. Installed iPhones pick up the update after the app is reopened.
+
+## Reminders & notifications
+
+One reminder plan is derived from app data (task reminders, water rule, focus timer, cycle alerts) and handed to the platform's deliverer:
+
+- **Android:** `android/src/me/ali/orbit/Scheduler.java` diffs the plan against what's armed and uses exact `AlarmManager` alarms. Water is a rule (only the next slot is armed, the following one is computed when it fires). Notification channels per type, action buttons (+1 glass, Done, Snooze 10 min), re-armed after reboot / time change / update.
+- **iPhone (PWA):** `push/` is a Cloudflare Worker with one Durable Object per device holding the subscription, the one-shot reminders and the water rule; a storage alarm fires at the exact due time and sends Web Push (VAPID + aes128gcm). Reminder texts are AES-GCM encrypted on the phone and decrypted by `web/sw.js`, so the server only knows *when*.
+- `web/schedule.js` is the single water-rule implementation shared by the app, service worker and server.
+
+```sh
+cd push && npm install && npm test   # crypto, scheduling and end-to-end delivery tests (local wrangler)
+npx wrangler deploy                  # needs VAPID_PRIVATE_JWK secret: npx wrangler secret put VAPID_PRIVATE_JWK
+```
+
+UI smoke test (every screen and sheet): `node tests/smoke.cjs http://127.0.0.1:8766/` with `web/` served locally.

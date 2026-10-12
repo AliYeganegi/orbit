@@ -1,0 +1,21 @@
+{
+  "name": "push",
+  "version": "1.0.0",
+  "description": "Orbit push server (Cloudflare Worker)",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node test/crypto.test.mjs && node test/flow.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "http_ece": "^1.2.0",
+    "wrangler": "^4.149.0"
+  },
+  "private": true
+}

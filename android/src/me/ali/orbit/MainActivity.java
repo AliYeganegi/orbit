@@ -2,8 +2,7 @@ package me.ali.orbit;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlarmManager;
-import android.app.PendingIntent;
+import android.app.NotificationManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -14,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.Settings;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.Window;
@@ -24,19 +24,39 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 
 public class MainActivity extends Activity {
     private static final String HOST = "appassets.local";
     private static final int BG_DARK = 0xFF0B0C10;
     private static final int BG_LIGHT = 0xFFF3F4F8;
 
+    private static WeakReference<MainActivity> live = new WeakReference<>(null);
+
     private WebView web;
+    private boolean loaded;
+    private String pendingGo;
+
+    /** Lets the app pick up actions taken from a notification while it is open. */
+    static void pokeApp() {
+        MainActivity a = live.get();
+        if (a != null) a.runOnUiThread(() -> a.js("window.orbitResume && window.orbitResume()"));
+    }
+
+    private void js(String code) {
+        if (web != null && loaded) web.evaluateJavascript(code, null);
+    }
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        live = new WeakReference<>(this);
+        Scheduler.ensureChannels(this);
+        pendingGo = getIntent().getStringExtra("go");
         web = new WebView(this);
         applyBars(isSystemDark());
 
@@ -68,6 +88,12 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageFinished(WebView view, String url) {
+                loaded = true;
+                openPending();
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 if (HOST.equals(u.getHost())) return false;
@@ -77,6 +103,20 @@ public class MainActivity extends Activity {
         });
         setContentView(web);
         web.loadUrl("https://" + HOST + "/index.html");
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        pendingGo = intent.getStringExtra("go");
+        openPending();
+    }
+
+    private void openPending() {
+        if (pendingGo == null || pendingGo.isEmpty() || !loaded) return;
+        js("window.orbitGo && window.orbitGo(" + JSONObject.quote(pendingGo) + ")");
+        pendingGo = null;
     }
 
     private static String mime(String path) {
@@ -129,14 +169,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         web.onResume();
-    }
-
-    private PendingIntent alarmIntent(int id, String title, String body, int flags) {
-        Intent i = new Intent(this, AlarmReceiver.class);
-        i.putExtra("id", id);
-        if (title != null) i.putExtra("title", title);
-        if (body != null) i.putExtra("body", body);
-        return PendingIntent.getBroadcast(this, id, i, flags | PendingIntent.FLAG_IMMUTABLE);
+        js("window.orbitResume && window.orbitResume()");
     }
 
     class Bridge {
@@ -152,22 +185,26 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void schedule(int id, String at, String title, String body) {
-            long when = Long.parseLong(at);
-            AlarmManager am = getSystemService(AlarmManager.class);
-            PendingIntent pi = alarmIntent(id, title, body, PendingIntent.FLAG_UPDATE_CURRENT);
-            boolean exact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms();
-            if (exact) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when, pi);
-            else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, when, pi);
+        public void sync(String planJson) {
+            try { Scheduler.sync(MainActivity.this, planJson); } catch (Exception ignored) { }
         }
 
         @JavascriptInterface
-        public void cancel(int id) {
-            PendingIntent pi = alarmIntent(id, null, null, PendingIntent.FLAG_NO_CREATE);
-            if (pi != null) {
-                getSystemService(AlarmManager.class).cancel(pi);
-                pi.cancel();
-            }
+        public String drain() {
+            return Scheduler.drain(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public String notifStatus() {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            boolean on = nm != null && nm.areNotificationsEnabled();
+            return "{\"enabled\":" + on + "}";
+        }
+
+        @JavascriptInterface
+        public void openNotifSettings() {
+            Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            runOnUiThread(() -> startActivity(i));
         }
 
         @JavascriptInterface
@@ -179,6 +216,14 @@ public class MainActivity extends Activity {
             send.putExtra(Intent.EXTRA_SUBJECT, "Orbit backup");
             send.putExtra(Intent.EXTRA_TEXT, text);
             runOnUiThread(() -> startActivity(Intent.createChooser(send, "Save backup to…")));
+        }
+
+        @JavascriptInterface
+        public void keepAwake(boolean on) {
+            runOnUiThread(() -> {
+                if (on) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
         }
 
         @JavascriptInterface

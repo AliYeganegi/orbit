@@ -65,6 +65,9 @@ function words(n) {
   return n + ' Toman';
 }
 const mmss = s => pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+const hm = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const isToday = ms => keyOf(new Date(ms)) === R.today;
+const everyLabel = m => (m < 60 ? m + ' min' : +(m / 60).toFixed(1) + ' h');
 
 /* ================= constants ================= */
 const MOODS = [
@@ -138,13 +141,9 @@ function chime() {
     });
   } catch (e) {}
 }
-const hash = s => { let h = 7; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) | 0; return h; };
 const Native = {
   has: !!AN,
-  notify: !!AN,
   vibrate(ms = 10) { try { AN ? AN.vibrate(ms) : navigator.vibrate && navigator.vibrate(ms); } catch (e) {} },
-  schedule(id, at, title, body) { try { if (AN && at > Date.now()) AN.schedule(hash(id), String(Math.round(at)), title, body); } catch (e) {} },
-  cancel(id) { try { AN && AN.cancel(hash(id)); } catch (e) {} },
   share(text) {
     try { if (AN) return AN.share(text); } catch (e) {}
     if (navigator.share) {
@@ -166,19 +165,23 @@ const defaults = () => ({
   settings: {
     name: '', theme: 'system', onboarded: false,
     waterGoal: 8, glassMl: 250, budget: 0,
-    focus: { work: 25, short: 5, long: 15, rounds: 4 },
+    focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
     cycle: { name: '', len: 28, plen: 5, notify: true },
+    notify: { tasks: true, focus: true },
+    waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
   },
   tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [],
   water: {}, mood: {}, focusLog: {},
-  timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, count: 0 },
+  timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
 function hydrate(raw) {
   const d = defaults();
   if (!raw || typeof raw !== 'object') return d;
   for (const k of Object.keys(d)) if (raw[k] !== undefined) d[k] = raw[k];
+  d.timer = { ...defaults().timer, ...(raw.timer || {}) };
   const s = raw.settings || {};
-  d.settings = { ...defaults().settings, ...s, focus: { ...defaults().settings.focus, ...(s.focus || {}) }, cycle: { ...defaults().settings.cycle, ...(s.cycle || {}) } };
+  const ds = defaults().settings;
+  d.settings = { ...ds, ...s, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}) }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
   return d;
 }
 function load() { try { return hydrate(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return defaults(); } }
@@ -187,6 +190,18 @@ let saveT;
 const saveNow = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 watch(S, () => { clearTimeout(saveT); saveT = setTimeout(saveNow, 200); }, { deep: true });
 document.addEventListener('visibilitychange', () => document.hidden && saveNow());
+
+// one-off cleanup of the notification test run on the developer's phone (2026-10-12); no-op elsewhere
+try {
+  const bk = JSON.parse(localStorage.getItem('orbit.testBackup'));
+  if (bk) {
+    S.tasks = S.tasks.filter(t => t.id !== 'zztest');
+    Object.assign(S.settings.waterRemind, bk.water);
+    const k = keyOf(new Date());
+    if (bk.count) S.water[k] = bk.count; else delete S.water[k];
+    localStorage.removeItem('orbit.testBackup');
+  }
+} catch (e) {}
 
 const R = reactive({ now: Date.now(), today: keyOf(new Date()), sysDark: Native.sysDark() });
 const nav = reactive({ tab: 'today', screen: null });
@@ -223,22 +238,14 @@ watchEffect(() => {
 
 /* ================= domain logic ================= */
 const justDone = reactive({});
-function scheduleTask(t) {
-  Native.cancel('t' + t.id);
-  if (t.done || !t.remind || !t.due || !t.time) return;
-  const d = parseKey(t.due); const [h, m] = t.time.split(':');
-  d.setHours(+h, +m, 0, 0);
-  Native.schedule('t' + t.id, d.getTime(), '⏰ ' + t.title, t.notes || 'Task reminder from Orbit');
-}
 function toggleTask(t) {
-  if (t.done) { t.done = false; t.doneAt = null; t.doneDay = null; scheduleTask(t); return; }
+  if (t.done) { t.done = false; t.doneAt = null; t.doneDay = null; return; }
   if (justDone[t.id]) return;
   justDone[t.id] = true;
   Native.vibrate(14);
   setTimeout(() => {
     t.done = true; t.doneAt = Date.now(); t.doneDay = R.today;
     delete justDone[t.id];
-    scheduleTask(t);
     const left = S.tasks.filter(x => !x.done && x.due && x.due <= R.today).length;
     const had = S.tasks.some(x => x.doneDay === R.today);
     if (!left && had && t.due && t.due <= R.today) say('All of today\'s tasks are done 🎉');
@@ -254,8 +261,7 @@ function delTask(t) {
   const i = S.tasks.indexOf(t);
   if (i < 0) return;
   S.tasks.splice(i, 1);
-  Native.cancel('t' + t.id);
-  say('Task deleted', () => { S.tasks.splice(i, 0, t); scheduleTask(t); });
+  say('Task deleted', () => S.tasks.splice(i, 0, t));
 }
 const prioC = p => PRIOS[p || 0].c;
 
@@ -293,39 +299,111 @@ function setMood(v) {
 }
 
 /* focus timer */
+const FOCUS_PRESETS = [
+  { id: 'classic', l: 'Classic', work: 25, short: 5, long: 15 },
+  { id: 'deep', l: 'Deep work', work: 50, short: 10, long: 20 },
+  { id: 'sprint', l: 'Sprint', work: 15, short: 3, long: 10 },
+];
+// keep the screen on while a session runs (native flag on Android, Wake Lock API on the web)
+const wake = {
+  lock: null,
+  async on() {
+    if (!S.settings.focus.keepAwake) return;
+    try { if (AN && AN.keepAwake) return AN.keepAwake(true); } catch (e) {}
+    try { if (navigator.wakeLock && !this.lock) { this.lock = await navigator.wakeLock.request('screen'); this.lock.addEventListener('release', () => { this.lock = null; }); } } catch (e) {}
+  },
+  off() {
+    try { if (AN && AN.keepAwake) AN.keepAwake(false); } catch (e) {}
+    if (this.lock) { this.lock.release().catch(() => {}); this.lock = null; }
+  },
+};
 const Timer = {
-  total(m) { return S.settings.focus[m || S.timer.mode] * 60; },
+  len(m) { return S.settings.focus[m || S.timer.mode] * 60; },
+  total() { return S.timer.total || this.len(); },
   left() { const t = S.timer; return t.running ? Math.max(0, Math.ceil((t.endAt - R.now) / 1000)) : t.left; },
-  progress() { return 1 - this.left() / this.total(); },
+  elapsed() { return this.total() - this.left(); },
+  progress() { return this.elapsed() / this.total(); },
+  started() { return S.timer.running || this.elapsed() > 0; },
   start() {
     const t = S.timer;
-    if (t.left <= 0) t.left = this.total();
+    if (!t.total) t.total = this.len();
+    if (t.left <= 0) t.left = t.total;
     t.endAt = Date.now() + t.left * 1000; t.running = true;
     Native.vibrate(10);
     if (!Native.has) { try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) {} }
-    const work = t.mode === 'work';
-    Native.schedule('focus', t.endAt, work ? 'Focus session complete 🎉' : 'Break is over ☕', work ? 'Great work! Time for a break.' : 'Ready to focus again?');
+    wake.on();
   },
-  pause() { const t = S.timer; t.left = this.left(); t.running = false; Native.cancel('focus'); },
+  pause() { const t = S.timer; t.left = this.left(); t.running = false; Native.vibrate(10); wake.off(); },
   toggle() { S.timer.running ? this.pause() : this.start(); },
-  reset() { const t = S.timer; t.running = false; t.left = this.total(); Native.cancel('focus'); },
-  setMode(m) { S.timer.mode = m; this.reset(); },
+  // snapshot so destructive actions can be undone instead of confirmed
+  snap() {
+    const t = S.timer, log = S.focusLog[R.today];
+    return { timer: { ...t, left: this.left(), running: t.running }, log: log ? JSON.parse(JSON.stringify(log)) : null, day: R.today };
+  },
+  restore(sn) {
+    Object.assign(S.timer, sn.timer, { running: false });
+    if (sn.log) S.focusLog[sn.day] = sn.log; else delete S.focusLog[sn.day];
+    if (sn.timer.running) this.start();
+  },
+  withUndo(msg, fn) {
+    const worth = this.elapsed() >= 30;
+    const sn = this.snap();
+    fn();
+    if (worth) say(msg, () => this.restore(sn));
+  },
+  reset() {
+    this.withUndo('Timer reset', () => { const t = S.timer; t.running = false; t.total = this.len(); t.left = t.total; wake.off(); });
+  },
+  setMode(m) {
+    if (m === S.timer.mode) return;
+    this.withUndo('Switched to ' + MODES[m].l.toLowerCase(), () => { const t = S.timer; t.mode = m; t.running = false; t.total = this.len(m); t.left = t.total; wake.off(); });
+    Native.vibrate(6);
+  },
+  extend(min) {
+    const t = S.timer;
+    t.total += min * 60;
+    if (t.running) t.endAt += min * 60e3; else t.left += min * 60;
+    Native.vibrate(8);
+  },
+  skip() { this.withUndo(S.timer.mode === 'work' ? 'Session ended early' : 'Break skipped', () => this.finish(false)); },
+  log(min) {
+    const l = S.focusLog[R.today] || (S.focusLog[R.today] = { min: 0, n: 0, s: [] });
+    if (!l.s) l.s = [];
+    l.min += min;
+    return l;
+  },
   finish(auto) {
     const t = S.timer, f = S.settings.focus;
     if (t.mode === 'work') {
-      const mins = auto ? f.work : Math.floor((this.total() - this.left()) / 60);
+      const mins = auto ? Math.round(this.total() / 60) : Math.floor(this.elapsed() / 60);
       if (mins > 0) {
-        const l = S.focusLog[R.today] || (S.focusLog[R.today] = { min: 0, n: 0 });
-        l.min += mins; if (auto) l.n++;
+        const l = this.log(mins);
+        if (auto) l.n++;
+        l.s.push({ at: Date.now(), min: mins, label: t.label || '', done: !!auto });
       }
       if (auto) t.count++;
       t.mode = auto && t.count % f.rounds === 0 ? 'long' : 'short';
     } else t.mode = 'work';
-    t.running = false; t.left = this.total(); Native.cancel('focus');
-    if (auto) { Native.vibrate(600); if (!Native.has && !document.hidden) chime(); say(t.mode === 'work' ? 'Break over. Ready to focus?' : 'Session complete! Take a break ☕'); }
+    t.running = false; t.total = this.len(); t.left = t.total;
+    wake.off();
+    if (auto) {
+      Native.vibrate(600);
+      if (f.sound && !document.hidden) chime();
+      const goalHit = t.mode !== 'work' && focusToday.value.n === f.goal;
+      say(t.mode === 'work' ? 'Break over. Ready to focus?' : goalHit ? 'Daily focus goal reached! 🏆' : 'Session complete! Take a break ☕');
+      if (t.mode === 'work' ? f.autoFocus : f.autoBreak) this.start();
+    }
   },
+  resetCycle() { S.timer.count = 0; Native.vibrate(8); },
 };
-const focusToday = computed(() => S.focusLog[R.today] || { min: 0, n: 0 });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.timer.running) wake.on(); });
+if (S.timer.running) wake.on();
+const focusToday = computed(() => S.focusLog[R.today] || { min: 0, n: 0, s: [] });
+const focusStreak = computed(() => {
+  let k = R.today; if (!(S.focusLog[k] && S.focusLog[k].n)) k = addDays(k, -1);
+  let n = 0; while (S.focusLog[k] && S.focusLog[k].n) { n++; k = addDays(k, -1); }
+  return n;
+});
 
 setInterval(() => {
   R.now = Date.now();
@@ -413,16 +491,191 @@ function togglePeriodDay(k) {
   if (i >= 0) S.cycleDays.splice(i, 1); else S.cycleDays.push(k);
   Native.vibrate(12);
 }
-watch(() => [cyc.value.next, S.settings.cycle.notify, S.settings.cycle.name], () => {
-  Native.cancel('cyc2'); Native.cancel('cyc0');
+
+/* ================= reminders ================= */
+// One plan, two deliverers. The plan is derived purely from app data; Android arms it as exact
+// on-device alarms, iPhone (which can't schedule locally) sends it to the Orbit push server.
+const PUSH_URL = window.ORBIT_PUSH_URL || 'https://orbit-push.example.workers.dev'; // override is for local testing
+const VAPID_PUBLIC = 'BOIZ_UH6C3MvvJidPGSXJPTlkmSH9JCffuuC-vxe2Gob0fjkMklZnHq5zKvWkAS6AaBabmwPgtldeZWn9YQpP4I';
+const PUSH_SUPPORTED = !AN && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const BEFORE = [{ v: 0, l: 'At time' }, { v: 5, l: '5 min before' }, { v: 15, l: '15 min before' }, { v: 30, l: '30 min before' }, { v: 60, l: '1 hour before' }];
+const beforeLabel = m => (m >= 60 ? (m / 60) + ' hour' + (m > 60 ? 's' : '') : m + ' min');
+
+function taskAt(t) {
+  const d = parseKey(t.due); const [h, m] = t.time.split(':');
+  d.setHours(+h, +m, 0, 0);
+  return d.getTime() - (t.before || 0) * 60e3;
+}
+const plan = computed(() => {
+  const out = [], now = Date.now() - 60e3, n = S.settings.notify;
+  if (n.tasks) for (const t of S.tasks) {
+    if (t.done || !t.remind || !t.due || !t.time) continue;
+    const at = taskAt(t);
+    if (at < now) continue;
+    const when = t.before ? 'Starts in ' + beforeLabel(t.before) + ' (' + t.time + ')' : 'Due now';
+    out.push({ id: 'task:' + t.id, at, ch: 'tasks', title: '⏰ ' + t.title, body: t.notes ? when + ' · ' + t.notes : when, go: 'tasks', task: t.id });
+  }
+  const tm = S.timer;
+  if (n.focus && tm.running && tm.endAt > now) {
+    const work = tm.mode === 'work';
+    out.push({ id: 'focus:' + tm.endAt, at: tm.endAt, ch: 'focus', title: work ? 'Focus session complete 🎉' : 'Break is over ☕', body: work ? 'Great work! Time for a break.' : 'Ready to focus again?', go: 'focus' });
+  }
   const c = cyc.value;
-  if (!c.has || !S.settings.cycle.notify) return;
-  const at = (k, h) => { const d = parseKey(k); d.setHours(h, 0, 0, 0); return d.getTime(); };
-  const nm = S.settings.cycle.name.trim();
-  const who = nm ? nm + '\'s' : 'Your';
-  Native.schedule('cyc2', at(addDays(c.next, -2), 10), '💗 Heads up', who + ' period is expected in 2 days');
-  Native.schedule('cyc0', at(c.next, 9), '🌸 Period expected today', who + ' period may start today. Be extra kind 💗');
-}, { immediate: true });
+  if (c.has && S.settings.cycle.notify) {
+    const at = (k, h) => { const d = parseKey(k); d.setHours(h, 0, 0, 0); return d.getTime(); };
+    const nm = S.settings.cycle.name.trim(), who = nm ? nm + '\'s' : 'Your';
+    out.push({ id: 'cycle:2:' + c.next, at: at(addDays(c.next, -2), 10), ch: 'cycle', title: '💗 Heads up', body: who + ' period is expected in 2 days', go: 'cycle' });
+    out.push({ id: 'cycle:0:' + c.next, at: at(c.next, 9), ch: 'cycle', title: '🌸 Period expected today', body: nm ? who + ' period may start today. Be extra kind 💗' : 'Your period may start today. Take it easy 💗', go: 'cycle' });
+  }
+  return out.filter(r => r.at >= now).sort((a, b) => a.at - b.at);
+});
+const waterRule = computed(() => {
+  const w = S.settings.waterRemind, goal = S.settings.waterGoal, count = waterToday.value;
+  return { ...w, goal, glassMl: S.settings.glassMl, count, day: R.today, goalDay: count >= goal ? R.today : null };
+});
+const waterNext = computed(() => { R.now; return OrbitSchedule.waterTimes(waterRule.value, Date.now(), TZ, 3); });
+
+/* small IndexedDB key-value store, shared with the service worker */
+const idb = {
+  open() {
+    return this.p || (this.p = new Promise((res, rej) => {
+      const r = indexedDB.open('orbit', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+  },
+  async get(k) { const db = await this.open(); return new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+  async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
+};
+const b64u = {
+  enc: buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4)), c => c.charCodeAt(0)),
+};
+// reminder texts are sealed with a key that never leaves this phone; the service worker opens them
+async function sealKey() {
+  let k = await idb.get('key');
+  if (!k) { k = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); await idb.set('key', k); }
+  return k;
+}
+async function seal(key, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return b64u.enc(out);
+}
+
+const PUSH_KEY = 'orbit.push';
+const Rem = reactive({
+  push: (() => { try { return JSON.parse(localStorage.getItem(PUSH_KEY)) || {}; } catch (e) { return {}; } })(),
+  state: 'idle', last: 0, perm: PUSH_SUPPORTED ? Notification.permission : 'default', androidOn: true, busy: false,
+});
+const savePush = () => { try { localStorage.setItem(PUSH_KEY, JSON.stringify(Rem.push)); } catch (e) {} };
+// can this phone deliver reminders right now?
+const remReady = computed(() => (Native.has ? Rem.androidOn : !!Rem.push.token && Rem.perm === 'granted'));
+const remPossible = Native.has || PUSH_SUPPORTED || IOS;
+
+function refreshAndroidStatus() {
+  if (!AN || !AN.notifStatus) return;
+  try { Rem.androidOn = !!JSON.parse(AN.notifStatus()).enabled; } catch (e) {}
+}
+function payload() {
+  return { v: 1, tz: TZ, reminders: plan.value, water: waterRule.value };
+}
+let syncTimer, retryIn = 30e3;
+function scheduleSync(ms = 600) { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, ms); }
+async function syncNow() {
+  const p = payload();
+  if (AN) {
+    try { AN.sync(JSON.stringify(p)); Rem.state = 'ok'; Rem.last = Date.now(); } catch (e) { Rem.state = 'error'; }
+    return;
+  }
+  if (!Rem.push.token) return;
+  try {
+    Rem.state = 'syncing';
+    await idb.set('water', { day: R.today, count: waterToday.value, goal: S.settings.waterGoal });
+    const key = await sealKey();
+    const reminders = await Promise.all(p.reminders.map(async r => ({ id: r.id, at: r.at, ch: r.ch, c: await seal(key, { title: r.title, body: r.body, go: r.go }) })));
+    const w = p.water;
+    const water = w.on ? { on: true, every: w.every, start: w.start, end: w.end, days: w.days, stopAtGoal: w.stopAtGoal, goalDay: w.goalDay } : null;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    const res = await fetch(PUSH_URL + '/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + Rem.push.token },
+      body: JSON.stringify({ tz: TZ, reminders, water, subscription: sub ? sub.toJSON() : undefined }),
+    });
+    if (res.status === 401) { Rem.push = {}; savePush(); Rem.state = 'idle'; return; } // server forgot us (e.g. subscription expired)
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    Rem.state = 'ok'; Rem.last = Date.now(); retryIn = 30e3;
+  } catch (e) {
+    Rem.state = 'error';
+    scheduleSync(retryIn); retryIn = Math.min(retryIn * 3, 30 * 60e3);
+  }
+}
+watch(() => JSON.stringify(payload()), () => scheduleSync(), { immediate: true });
+setInterval(() => { if (Rem.push.token) scheduleSync(0); }, 6 * 3600e3); // keep the server's copy fresh
+
+async function enablePush() {
+  if (!PUSH_SUPPORTED) return;
+  Rem.busy = true;
+  try {
+    const perm = await Notification.requestPermission(); // must be the first await: iOS needs the tap gesture
+    Rem.perm = perm;
+    if (perm !== 'granted') { say('Notifications were not allowed'); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u.dec(VAPID_PUBLIC) }));
+    const res = await fetch(PUSH_URL + '/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    Rem.push = { token: d.id + '.' + d.token, since: Date.now() }; savePush();
+    await syncNow();
+    say('Notifications are on ✅');
+  } catch (e) {
+    say('Couldn\'t reach the reminder server. Check your connection and try again');
+  } finally { Rem.busy = false; }
+}
+async function disablePush() {
+  Rem.busy = true;
+  try {
+    await fetch(PUSH_URL + '/device', { method: 'DELETE', headers: { Authorization: 'Bearer ' + Rem.push.token } }).catch(() => {});
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch (e) {}
+  Rem.push = {}; savePush(); Rem.state = 'idle'; Rem.busy = false;
+  say('Notifications turned off');
+}
+async function testNotify() {
+  if (Native.has) { say('Sending a test in 5 seconds…'); AN.sync(JSON.stringify({ ...payload(), reminders: [...plan.value, { id: 'test:' + Date.now(), at: Date.now() + 5000, ch: 'tasks', title: '🔔 Orbit test', body: 'Notifications work!', go: 'alerts' }] })); return; }
+  Rem.busy = true;
+  try {
+    const r = await fetch(PUSH_URL + '/test', { method: 'POST', headers: { Authorization: 'Bearer ' + Rem.push.token } });
+    say(r.ok ? 'Test sent. It should arrive in a few seconds' : 'The server couldn\'t reach your phone. Try turning notifications off and on');
+  } catch (e) { say('Couldn\'t reach the reminder server'); } finally { Rem.busy = false; }
+}
+function askAndroidNotify() {
+  Native.askNotify();
+  setTimeout(() => { refreshAndroidStatus(); if (!Rem.androidOn && AN.openNotifSettings) AN.openNotifSettings(); }, 1500);
+}
+
+/* actions taken from Android notifications (+1 glass, Done) while the app was closed */
+function drainNative() {
+  if (!AN || !AN.drain) return;
+  let q = [];
+  try { q = JSON.parse(AN.drain()); } catch (e) {}
+  for (const a of q) {
+    if (a.t === 'water') S.water[a.day] = clamp((S.water[a.day] || 0) + (a.n || 1), 0, 40);
+    if (a.t === 'done') {
+      const t = S.tasks.find(x => x.id === a.id);
+      if (t && !t.done) { t.done = true; t.doneAt = a.at; t.doneDay = keyOf(new Date(a.at)); }
+    }
+  }
+}
+window.orbitResume = () => { drainNative(); refreshAndroidStatus(); };
+window.orbitGo = where => {
+  const tabs = ['today', 'tasks', 'habits', 'money', 'more'];
+  if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
+};
+drainNative(); refreshAndroidStatus();
 
 /* ================= base components ================= */
 const Ic = {
@@ -564,7 +817,7 @@ const TaskSheet = {
     const titleEl = ref(null);
     watch(() => ui.task, v => {
       if (!v) return;
-      Object.assign(d, { title: '', notes: '', due: null, time: '', remind: false, priority: 0 }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : (v.preset || {}));
+      Object.assign(d, { title: '', notes: '', due: null, time: '', remind: false, before: 0, priority: 0 }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : (v.preset || {}));
       if (!v.ref) nextTick(() => setTimeout(() => titleEl.value && titleEl.value.focus(), 250));
     });
     const isEdit = computed(() => ui.task && ui.task.ref);
@@ -573,14 +826,16 @@ const TaskSheet = {
       if (!d.due) { d.time = ''; d.remind = false; }
       if (!d.time) d.remind = false;
       let t;
-      if (isEdit.value) { t = ui.task.ref; Object.assign(t, { title: d.title.trim(), notes: d.notes, due: d.due, time: d.time, remind: d.remind, priority: d.priority }); }
-      else { t = addTask(d.title, d.due); Object.assign(t, { notes: d.notes, time: d.time, remind: d.remind, priority: d.priority }); }
-      if (t.remind) Native.askNotify();
-      scheduleTask(t);
+      const fields = { notes: d.notes, due: d.due, time: d.time, remind: d.remind, before: d.remind ? d.before : 0, priority: d.priority };
+      if (isEdit.value) { t = ui.task.ref; Object.assign(t, { title: d.title.trim(), ...fields }); }
+      else { t = addTask(d.title, d.due); Object.assign(t, fields); }
+      if (t.remind && Native.has) Native.askNotify();
       ui.task = null;
     }
     function remove() { const t = ui.task.ref; ui.task = null; delTask(t); }
-    return { d, save, remove, isEdit, titleEl, PRIOS };
+    function setup() { ui.task = null; nav.screen = 'alerts'; }
+    const past = computed(() => d.remind && d.due && d.time && taskAt(d) < Date.now());
+    return { d, save, remove, isEdit, titleEl, PRIOS, setup, past };
   },
   template: `<Sheet :open="!!ui.task" :title="isEdit ? 'Edit task' : 'New task'" @close="ui.task = null">
     <div style="--acc:var(--c-tasks)">
@@ -589,13 +844,19 @@ const TaskSheet = {
       <span class="flabel">Due</span>
       <DatePick v-model="d.due"/>
       <template v-if="d.due">
-        <span class="flabel">{{ Native.notify ? 'Time & reminder' : 'Time' }}</span>
+        <span class="flabel">{{ remPossible ? 'Time & reminder' : 'Time' }}</span>
         <div class="row">
           <label class="chip" :class="{on: d.time}"><Ic n="clock" :s="15"/>{{ d.time || 'Add time' }}<input type="time" v-model="d.time"></label>
-          <button v-if="d.time" class="chip" @click="d.time=''; d.remind=false"><Ic n="x" :s="14"/></button>
+          <button v-if="d.time" class="chip" @click="d.time=''; d.remind=false" aria-label="Clear time"><Ic n="x" :s="14"/></button>
           <div class="grow"></div>
-          <template v-if="d.time && Native.notify"><Ic n="bell" :s="18" class="muted"/><Toggle v-model="d.remind"/></template>
+          <template v-if="d.time && remPossible"><Ic n="bell" :s="18" :class="d.remind ? '' : 'muted'" :style="{color: d.remind ? 'var(--c-tasks)' : ''}"/><Toggle v-model="d.remind"/></template>
         </div>
+        <template v-if="d.time && d.remind">
+          <div class="chips" style="margin-top:12px"><button v-for="b in BEFORE" :key="b.v" class="chip" :class="{on: (d.before || 0) === b.v}" @click="d.before = b.v">{{ b.l }}</button></div>
+          <div v-if="!remReady" class="hint warn"><Ic n="bell" :s="16"/><span class="grow">Notifications aren't set up on this phone yet</span><button class="btn sm primary" @click="setup">Set up</button></div>
+          <div v-else-if="past" class="hint"><Ic n="clock" :s="16"/><span class="grow">That time has already passed, so no reminder will be sent</span></div>
+          <div v-else-if="!S.settings.notify.tasks" class="hint"><Ic n="bell" :s="16"/><span class="grow">Task reminders are turned off in Notifications</span><button class="btn sm" @click="setup">Open</button></div>
+        </template>
       </template>
       <span class="flabel">Priority</span>
       <div class="prio">
@@ -1174,50 +1435,129 @@ const NotesView = {
 
 const FocusView = {
   setup() {
-    const cfg = ref(false);
+    const cfg = ref(false), pick = ref(false), custom = ref('');
+    const f = S.settings.focus;
     const mode = computed(() => MODES[S.timer.mode]);
     const week = computed(() => Array.from({ length: 7 }, (_, i) => { const k = addDays(R.today, i - 6); const l = S.focusLog[k]; return { k, l: WD[parseKey(k).getDay()][0], v: l ? l.min : 0 }; }));
     const max = computed(() => Math.max(30, ...week.value.map(w => w.v)));
     const weekTotal = computed(() => week.value.reduce((s, w) => s + w.v, 0));
-    const roundIdx = computed(() => S.timer.count % S.settings.focus.rounds);
-    watch(() => [S.settings.focus.work, S.settings.focus.short, S.settings.focus.long], () => { if (!S.timer.running) Timer.reset(); });
-    return { cfg, mode, week, max, weekTotal, roundIdx, MODES };
+    const round = computed(() => (S.timer.count % f.rounds) + 1);
+    const status = computed(() => {
+      const t = S.timer;
+      if (t.running) return t.mode === 'work' ? 'Stay with it' : 'Breathe, stretch, relax';
+      if (Timer.elapsed() > 0) return 'Paused';
+      return t.mode === 'work' ? 'Ready when you are' : 'Time for a break';
+    });
+    const mainLabel = computed(() => (S.timer.running ? 'Pause' : Timer.elapsed() > 0 ? 'Resume' : 'Start'));
+    const endsAt = computed(() => (S.timer.running ? hm(S.timer.endAt) : ''));
+    const openTasks = computed(() => S.tasks.filter(t => !t.done && (!t.due || t.due <= addDays(R.today, 1))).slice(0, 8));
+    const label = computed(() => { const l = S.timer.label; if (!l) return ''; const t = S.tasks.find(x => 'task:' + x.id === l); return t ? t.title : l.startsWith('task:') ? '' : l; });
+    function setLabel(v) { S.timer.label = v; pick.value = false; custom.value = ''; Native.vibrate(6); }
+    const preset = computed(() => (FOCUS_PRESETS.find(p => p.work === f.work && p.short === f.short && p.long === f.long) || {}).id);
+    function applyPreset(p) { Object.assign(f, { work: p.work, short: p.short, long: p.long }); Native.vibrate(8); }
+    watch(() => [f.work, f.short, f.long], () => { if (!Timer.started()) { S.timer.total = Timer.len(); S.timer.left = S.timer.total; } });
+    function clearToday() {
+      const prev = S.focusLog[R.today];
+      if (!prev) return;
+      delete S.focusLog[R.today];
+      cfg.value = false;
+      say('Today\'s focus history cleared', () => { S.focusLog[R.today] = prev; });
+    }
+    const sessions = computed(() => [...(focusToday.value.s || [])].reverse());
+    return { cfg, pick, custom, f, mode, week, max, weekTotal, round, status, mainLabel, endsAt, openTasks, label, setLabel, preset, applyPreset, clearToday, sessions, MODES, FOCUS_PRESETS };
   },
   template: `<div class="view" :style="{'--acc': mode.c, '--c': 'var(--c-focus)'}">
-    <Head title="Focus"><button class="icon-btn" @click="cfg = true" aria-label="Timer settings"><Ic n="settings" :s="19"/></button></Head>
+    <Head title="Focus" :sub="focusStreak > 1 ? focusStreak + ' day streak 🔥' : 'One thing at a time'"><button class="icon-btn" @click="cfg = true" aria-label="Timer settings"><Ic n="settings" :s="19"/></button></Head>
     <div class="seg"><button v-for="(m, k) in MODES" :key="k" :class="{on: S.timer.mode === k}" @click="Timer.setMode(k)">{{ m.l }}</button></div>
+
+    <button v-if="S.timer.mode === 'work'" class="focus-on tap" @click="pick = true">
+      <Ic :n="label ? 'target' : 'plus'" :s="16"/><span>{{ label || 'What are you working on?' }}</span><Ic v-if="label" n="chevron-right" :s="16" class="muted"/>
+    </button>
+
     <div class="focus-wrap">
-      <div style="margin-top:28px">
-        <Ring :v="Timer.progress()" :size="270" :sw="14" :c="mode.c">
+      <div class="focus-ring" :class="{run: S.timer.running}">
+        <Ring :v="Timer.progress()" :size="264" :sw="14" :c="mode.c">
           <div><div class="timer-txt">{{ mmss(Timer.left()) }}</div>
-            <div class="timer-sub">{{ S.timer.running ? (S.timer.mode === 'work' ? 'Stay with it…' : 'Breathe, stretch, relax') : (Timer.left() < Timer.total() ? 'Paused' : mode.l) }}</div>
-            <div class="rounds" v-if="S.timer.mode === 'work'"><i v-for="i in S.settings.focus.rounds" :key="i" :class="{on: i - 1 === roundIdx}"></i></div></div>
+            <div class="timer-sub">{{ status }}</div>
+            <div class="timer-meta">
+              <template v-if="S.timer.mode === 'work'">Round {{ round }} of {{ f.rounds }}</template>
+              <template v-else>{{ mode.l }}</template>
+              <template v-if="endsAt"> · ends {{ endsAt }}</template>
+            </div>
+            <div class="rounds" v-if="S.timer.mode === 'work'"><i v-for="i in f.rounds" :key="i" :class="{on: i === round, done: i < round}"></i></div></div>
         </Ring>
       </div>
-      <div class="controls">
-        <button class="side" @click="Timer.reset()" aria-label="Reset"><Ic n="rotate-ccw"/></button>
-        <button class="main" :class="{run: S.timer.running}" @click="Timer.toggle()" :aria-label="S.timer.running ? 'Pause' : 'Start'"><Ic :n="S.timer.running ? 'pause' : 'play'" :s="32" :w="2.2"/></button>
-        <button class="side" @click="Timer.finish(false)" aria-label="Skip"><Ic n="skip-forward"/></button>
+      <div class="controls labeled">
+        <button class="side" @click="Timer.reset()" :disabled="!Timer.started()" aria-label="Reset"><Ic n="rotate-ccw"/><small>Reset</small></button>
+        <button class="main" :class="{run: S.timer.running}" @click="Timer.toggle()"><Ic :n="S.timer.running ? 'pause' : 'play'" :s="30" :w="2.2"/><small>{{ mainLabel }}</small></button>
+        <button class="side" @click="Timer.skip()" aria-label="Skip"><Ic n="skip-forward"/><small>{{ S.timer.mode === 'work' ? 'Finish' : 'Skip' }}</small></button>
+      </div>
+      <Transition name="fade"><button v-if="Timer.started()" class="chip extend" @click="Timer.extend(5)"><Ic n="plus" :s="14"/>5 min</button></Transition>
+    </div>
+
+    <div class="card focus-today">
+      <Ring :v="Math.min(1, focusToday.n / f.goal)" :size="64" :sw="7" c="var(--c-focus)"><b style="font-size:15px">{{ focusToday.n }}</b></Ring>
+      <div class="grow">
+        <div class="t">{{ focusToday.n >= f.goal ? 'Daily goal reached 🏆' : (f.goal - focusToday.n) + ' session' + (f.goal - focusToday.n === 1 ? '' : 's') + ' to your goal' }}</div>
+        <div class="s">{{ focusToday.min }} min focused today · goal {{ f.goal }} sessions</div>
       </div>
     </div>
-    <div class="grid2" style="margin-top:22px">
-      <div class="card"><div class="muted" style="font-size:13px;font-weight:600">Today</div><div style="font-size:26px;font-weight:800;letter-spacing:-.03em">{{ focusToday.min }}<small class="muted" style="font-size:13px"> min</small></div></div>
-      <div class="card"><div class="muted" style="font-size:13px;font-weight:600">Sessions</div><div style="font-size:26px;font-weight:800;letter-spacing:-.03em">{{ focusToday.n }}</div></div>
-    </div>
-    <div class="card" style="margin-top:12px">
+
+    <div class="card">
       <div class="sec"><h3>This week</h3><span class="muted" style="font-size:13px;font-weight:600">{{ Math.floor(weekTotal / 60) }}h {{ weekTotal % 60 }}m</span></div>
-      <div class="week-bars" style="--c:var(--c-focus)">
+      <div class="week-bars">
         <div v-for="w in week" :key="w.k" :class="{today: w.k === R.today}"><span class="v">{{ w.v || '' }}</span><i :style="{height: (w.v / max * 70) + '%'}"></i><small>{{ w.l }}</small></div>
       </div>
     </div>
-    <Sheet :open="cfg" title="Timer settings" @close="cfg = false">
-      <div class="settings-group" style="box-shadow:none">
-        <div class="list-row"><div class="grow"><div class="t">Focus</div></div><Stepper v-model="S.settings.focus.work" :min="5" :max="120" :step="5" unit="min"/></div>
-        <div class="list-row"><div class="grow"><div class="t">Short break</div></div><Stepper v-model="S.settings.focus.short" :min="1" :max="30" unit="min"/></div>
-        <div class="list-row"><div class="grow"><div class="t">Long break</div></div><Stepper v-model="S.settings.focus.long" :min="5" :max="60" :step="5" unit="min"/></div>
-        <div class="list-row"><div class="grow"><div class="t">Rounds before long break</div></div><Stepper v-model="S.settings.focus.rounds" :min="2" :max="8"/></div>
+
+    <template v-if="sessions.length">
+      <div class="label">Today's sessions</div>
+      <div class="settings-group">
+        <div v-for="(x, i) in sessions" :key="x.at" class="list-row">
+          <span class="bubble" :style="{'--c': x.done ? 'var(--c-focus)' : 'var(--muted)'}"><Ic :n="x.done ? 'circle-check' : 'timer'" :s="17"/></span>
+          <div class="grow"><div class="t">{{ x.label && x.label.startsWith('task:') ? ((S.tasks.find(t => 'task:' + t.id === x.label) || {}).title || 'Focus session') : (x.label || 'Focus session') }}</div><div class="s">{{ hm(x.at) }} · {{ x.min }} min{{ x.done ? '' : ' · ended early' }}</div></div>
+        </div>
       </div>
-      <p class="muted" style="font-size:13px;margin-top:14px">{{ Native.notify ? 'You\'ll get a notification when a session ends, even if the app is closed.' : 'A chime plays when a session ends while Orbit is open.' }}</p>
+    </template>
+
+    <Sheet :open="pick" title="What are you working on?" @close="pick = false">
+      <div :style="{'--acc': 'var(--c-focus)'}">
+        <div v-if="openTasks.length" class="settings-group" style="box-shadow:none">
+          <button v-for="t in openTasks" :key="t.id" class="list-row" style="width:100%;text-align:left" @click="setLabel('task:' + t.id)">
+            <span class="bubble" style="--c:var(--c-tasks)"><Ic n="circle-check" :s="17"/></span><div class="grow"><div class="t">{{ t.title }}</div><div class="s" v-if="t.due">{{ rel(t.due) }}</div></div>
+            <Ic v-if="S.timer.label === 'task:' + t.id" n="check" :s="18" style="color:var(--c-focus)"/></button>
+        </div>
+        <span class="flabel">Or type something</span>
+        <div class="quickbar"><input v-model="custom" placeholder="e.g. Study chapter 4" @keydown.enter="custom.trim() && setLabel(custom.trim())" enterkeyhint="done">
+          <button class="go" :disabled="!custom.trim()" @click="setLabel(custom.trim())" aria-label="Set"><Ic n="check" :s="20" :w="2.6"/></button></div>
+        <button v-if="S.timer.label" class="btn block" style="margin-top:14px" @click="setLabel('')">Clear</button>
+      </div>
+    </Sheet>
+
+    <Sheet :open="cfg" title="Timer settings" @close="cfg = false">
+      <div :style="{'--acc': 'var(--c-focus)'}">
+        <div class="presets">
+          <button v-for="p in FOCUS_PRESETS" :key="p.id" :class="{on: preset === p.id}" @click="applyPreset(p)"><b>{{ p.l }}</b><small>{{ p.work }} · {{ p.short }} · {{ p.long }} min</small></button>
+        </div>
+        <div class="settings-group" style="box-shadow:none;margin-top:14px">
+          <div class="list-row"><div class="grow"><div class="t">Focus</div></div><Stepper v-model="f.work" :min="5" :max="120" :step="5" unit="min"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Short break</div></div><Stepper v-model="f.short" :min="1" :max="30" unit="min"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Long break</div></div><Stepper v-model="f.long" :min="5" :max="60" :step="5" unit="min"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Long break every</div></div><Stepper v-model="f.rounds" :min="2" :max="8" unit="rounds"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Daily goal</div></div><Stepper v-model="f.goal" :min="1" :max="16" unit="sessions"/></div>
+        </div>
+        <div class="settings-group" style="box-shadow:none;margin-top:12px">
+          <div class="list-row"><div class="grow"><div class="t">Auto-start breaks</div></div><Toggle v-model="f.autoBreak"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Auto-start next focus</div></div><Toggle v-model="f.autoFocus"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Sound when time's up</div><div class="s">Plays while Orbit is open</div></div><Toggle v-model="f.sound"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Keep screen on</div><div class="s">While a session is running</div></div><Toggle v-model="f.keepAwake"/></div>
+        </div>
+        <p class="fine">{{ remReady && S.settings.notify.focus ? 'You\\'ll also get a notification when a session ends, even if Orbit is closed.' : 'Turn on notifications to be alerted when Orbit is closed.' }}</p>
+        <div class="btn-row">
+          <button class="btn" :disabled="!S.timer.count" @click="Timer.resetCycle(); say('Rounds reset')">Reset rounds</button>
+          <button class="btn danger" :disabled="!focusToday.min" @click="clearToday">Clear today</button>
+        </div>
+      </div>
     </Sheet>
   </div>`,
 };
@@ -1248,6 +1588,12 @@ const WaterView = {
       <div class="sec"><h3>Last 7 days</h3></div>
       <div class="week-bars"><div v-for="w in week" :key="w.k" :class="{today: w.k === R.today}"><span class="v">{{ w.v || '' }}</span><i :style="{height: (w.v / max * 70) + '%', background: w.v >= goal ? 'var(--c-water)' : ''}"></i><small>{{ w.l }}</small></div></div>
     </div>
+    <div class="label">Reminders</div>
+    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="go('alerts')">
+      <span class="bubble" style="--c:var(--c-water)"><Ic n="bell" :s="18"/></span>
+      <div class="grow"><div class="t">{{ S.settings.waterRemind.on ? 'Every ' + everyLabel(S.settings.waterRemind.every) + ', ' + S.settings.waterRemind.start + '–' + S.settings.waterRemind.end : 'Water reminders are off' }}</div>
+        <div class="s">{{ S.settings.waterRemind.on ? (waterNext.length ? 'Next at ' + hm(waterNext[0]) + (isToday(waterNext[0]) ? '' : ' ' + rel(keyOf(new Date(waterNext[0]))).toLowerCase()) : 'No upcoming reminders') : 'Get a nudge to drink through the day' }}</div></div>
+      <Ic n="chevron-right" :s="18" class="muted"/></button></div>
     <div class="label">Daily goal</div>
     <div class="settings-group">
       <div class="list-row"><div class="grow"><div class="t">Glasses per day</div><div class="s">{{ fmt(goal * S.settings.glassMl) }} ml total</div></div><Stepper v-model="S.settings.waterGoal" :min="1" :max="20"/></div>
@@ -1373,7 +1719,7 @@ const CycleView = {
     });
     const who = computed(() => S.settings.cycle.name.trim());
     const startDate = ref(R.today);
-    function logStart() { if (!S.cycleDays.includes(startDate.value)) S.cycleDays.push(startDate.value); Native.vibrate(14); Native.askNotify(); }
+    function logStart() { if (!S.cycleDays.includes(startDate.value)) S.cycleDays.push(startDate.value); Native.vibrate(14); if (Native.has) Native.askNotify(); }
     const history = computed(() => {
       const p = cyc.value.periods;
       return p.map((x, i) => ({ ...x, plen: diffDays(x.start, x.end) + 1, clen: p[i + 1] ? diffDays(x.start, p[i + 1].start) : null })).reverse().slice(0, 8);
@@ -1466,11 +1812,124 @@ const CycleView = {
         <div class="settings-group" style="box-shadow:none;margin-top:16px">
           <div class="list-row"><div class="grow"><div class="t">Typical cycle length</div><div class="s">Used until 2+ cycles are logged</div></div><Stepper v-model="S.settings.cycle.len" :min="20" :max="45" unit="d"/></div>
           <div class="list-row"><div class="grow"><div class="t">Typical period length</div></div><Stepper v-model="S.settings.cycle.plen" :min="2" :max="10" unit="d"/></div>
-          <div class="list-row" v-if="Native.notify"><div class="grow"><div class="t">Reminders</div><div class="s">2 days before & on the expected day</div></div><Toggle v-model="S.settings.cycle.notify"/></div>
+          <div class="list-row" v-if="remPossible"><div class="grow"><div class="t">Reminders</div><div class="s">2 days before & on the expected day</div></div><Toggle v-model="S.settings.cycle.notify"/></div>
         </div>
         <button v-if="S.cycleDays.length" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); cfg = false; say('Cycle data cleared')">Clear all cycle data</button>
       </div>
     </Sheet>
+  </div>`,
+};
+
+const NotificationsView = {
+  setup() {
+    const w = S.settings.waterRemind;
+    const EVERY = [30, 60, 90, 120, 180];
+    const DAYS = [{ l: 'Sa', v: 6 }, { l: 'Su', v: 0 }, { l: 'Mo', v: 1 }, { l: 'Tu', v: 2 }, { l: 'We', v: 3 }, { l: 'Th', v: 4 }, { l: 'Fr', v: 5 }];
+    const toggleDay = v => { const i = w.days.indexOf(v); i >= 0 ? w.days.splice(i, 1) : w.days.push(v); Native.vibrate(6); };
+    const badWindow = computed(() => w.end <= w.start);
+    const perDay = computed(() => OrbitSchedule.perDay(w));
+    const goalHit = computed(() => w.stopAtGoal && waterToday.value >= S.settings.waterGoal);
+    const ICON = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'] };
+    const upcoming = computed(() => {
+      const water = w.on ? waterNext.value.map(at => ({ id: 'w' + at, at, ch: 'water', title: 'Drink water', body: '' })) : [];
+      return [...plan.value, ...water].sort((a, b) => a.at - b.at).slice(0, 6);
+    });
+    const whenLabel = ms => (isToday(ms) ? 'Today' : rel(keyOf(new Date(ms)))) + ' · ' + hm(ms);
+    function toggleWater(v) { w.on = v; if (v && Native.has) Native.askNotify(); }
+    const status = computed(() => {
+      if (Native.has) return Rem.androidOn ? 'on' : 'blocked';
+      if (!PUSH_SUPPORTED) return IOS && !STANDALONE ? 'install' : 'unsupported';
+      if (Rem.perm === 'denied') return 'denied';
+      if (!Rem.push.token) return 'off';
+      return Rem.state === 'error' ? 'error' : 'on';
+    });
+    return { w, EVERY, DAYS, toggleDay, badWindow, perDay, goalHit, upcoming, whenLabel, toggleWater, status, ICON, everyLabel, hm };
+  },
+  template: `<div class="view" style="--acc:var(--c-tasks)">
+    <Head title="Notifications" :sub="Native.has ? 'Delivered by this phone, even offline' : 'Delivered by Orbit\\'s push server'"/>
+
+    <div class="card status-card" :class="status">
+      <template v-if="status === 'on'">
+        <div class="row"><span class="bubble" style="--c:var(--c-habits)"><Ic n="bell" :s="19"/></span>
+          <div class="grow"><b>Notifications are on</b><div class="s">{{ Native.has ? 'Exact alarms, even when Orbit is closed' : (Rem.last ? 'Synced ' + ago(Rem.last).toLowerCase() : 'Connected') }}</div></div></div>
+        <div class="btn-row" style="margin-top:14px"><button class="btn sm" :disabled="Rem.busy" @click="testNotify"><Ic n="sparkles" :s="16"/>Send a test</button>
+          <button v-if="!Native.has" class="btn sm" :disabled="Rem.busy" @click="disablePush">Turn off</button></div>
+      </template>
+      <template v-else-if="status === 'blocked'">
+        <div class="row"><span class="bubble" style="--c:var(--c-focus)"><Ic n="bell" :s="19"/></span>
+          <div class="grow"><b>Notifications are blocked</b><div class="s">Allow them so reminders can reach you</div></div></div>
+        <button class="btn primary block" style="margin-top:14px" @click="askAndroidNotify">Allow notifications</button>
+      </template>
+      <template v-else-if="status === 'off'">
+        <div class="row"><span class="bubble" style="--c:var(--c-tasks)"><Ic n="bell" :s="19"/></span>
+          <div class="grow"><b>Turn on notifications</b><div class="s">Get task, water, focus and cycle reminders on this iPhone</div></div></div>
+        <button class="btn primary block" style="margin-top:14px" :disabled="Rem.busy" @click="enablePush">{{ Rem.busy ? 'Connecting…' : 'Turn on notifications' }}</button>
+        <p class="fine">🔒 Reminder texts are encrypted on this phone. The server only knows when to ping you, never what about.</p>
+      </template>
+      <template v-else-if="status === 'error'">
+        <div class="row"><span class="bubble" style="--c:var(--c-mood)"><Ic n="rotate-ccw" :s="19"/></span>
+          <div class="grow"><b>Can't reach the reminder server</b><div class="s">Reminders you already set will still arrive. Changes will sync when you're back online.</div></div></div>
+        <button class="btn sm" style="margin-top:14px" @click="scheduleSync(0)">Retry now</button>
+      </template>
+      <template v-else-if="status === 'denied'">
+        <div class="row"><span class="bubble" style="--c:var(--c-focus)"><Ic n="bell" :s="19"/></span>
+          <div class="grow"><b>Notifications are blocked</b><div class="s">Open iPhone Settings → Notifications → Orbit and turn on Allow Notifications</div></div></div>
+      </template>
+      <template v-else-if="status === 'install'">
+        <div class="row"><span class="bubble" style="--c:var(--c-water)"><Ic n="download" :s="19"/></span>
+          <div class="grow"><b>Add Orbit to your Home Screen first</b><div class="s">iPhone only allows notifications for installed apps. In Safari tap Share, then Add to Home Screen, then open Orbit from there.</div></div></div>
+      </template>
+      <template v-else>
+        <div class="row"><span class="bubble" style="--c:var(--muted)"><Ic n="bell" :s="19"/></span>
+          <div class="grow"><b>Not available here</b><div class="s">This browser can't receive notifications. Use Safari on iPhone (installed to Home Screen) or the Android app.</div></div></div>
+      </template>
+    </div>
+
+    <div class="label">Water</div>
+    <div class="settings-group" style="--acc:var(--c-water)">
+      <div class="list-row"><span class="bubble" style="--c:var(--c-water)"><Ic n="droplet" :s="18"/></span>
+        <div class="grow"><div class="t">Water reminders</div><div class="s">{{ w.on ? perDay + ' a day' + (goalHit ? ' · paused today, goal reached 🎉' : '') : 'Nudges to drink through the day' }}</div></div>
+        <Toggle :model-value="w.on" @update:model-value="toggleWater"/></div>
+      <template v-if="w.on">
+        <div class="list-row" style="display:block">
+          <div class="t" style="margin-bottom:10px">Remind me every</div>
+          <div class="chips"><button v-for="m in EVERY" :key="m" class="chip" :class="{on: w.every === m}" @click="w.every = m">{{ everyLabel(m) }}</button></div>
+        </div>
+        <div class="list-row" style="display:block">
+          <div class="t" style="margin-bottom:10px">Between</div>
+          <div class="row" style="gap:10px">
+            <label class="chip on time-chip"><Ic n="sun" :s="15"/>{{ w.start }}<input type="time" v-model="w.start"></label>
+            <span class="muted">to</span>
+            <label class="chip on time-chip"><Ic n="moon" :s="15"/>{{ w.end }}<input type="time" v-model="w.end"></label>
+          </div>
+          <div v-if="badWindow" class="hint warn" style="margin-top:10px"><span class="grow">The end time needs to be after the start time</span></div>
+        </div>
+        <div class="list-row" style="display:block">
+          <div class="t" style="margin-bottom:10px">On these days</div>
+          <div class="day-dots"><button v-for="d in DAYS" :key="d.v" :class="{on: w.days.includes(d.v)}" @click="toggleDay(d.v)">{{ d.l }}</button></div>
+        </div>
+        <div class="list-row"><div class="grow"><div class="t">Pause after daily goal</div><div class="s">Stop for the day once you've had {{ S.settings.waterGoal }} glasses</div></div><Toggle v-model="w.stopAtGoal"/></div>
+      </template>
+    </div>
+
+    <div class="label">Other reminders</div>
+    <div class="settings-group">
+      <div class="list-row"><span class="bubble" style="--c:var(--c-tasks)"><Ic n="circle-check" :s="18"/></span>
+        <div class="grow"><div class="t">Task reminders</div><div class="s">At the time you set on each task</div></div><Toggle v-model="S.settings.notify.tasks"/></div>
+      <div class="list-row"><span class="bubble" style="--c:var(--c-focus)"><Ic n="timer" :s="18"/></span>
+        <div class="grow"><div class="t">Focus timer</div><div class="s">When a session or break ends</div></div><Toggle v-model="S.settings.notify.focus"/></div>
+      <div class="list-row"><span class="bubble" style="--c:var(--c-cycle)"><Ic n="flower-2" :s="18"/></span>
+        <div class="grow"><div class="t">Cycle</div><div class="s">{{ cyc.has ? '2 days before and on the expected day' : 'Set up the cycle tracker first' }}</div></div><Toggle v-model="S.settings.cycle.notify"/></div>
+    </div>
+
+    <div class="label">Coming up</div>
+    <div class="settings-group">
+      <div v-for="u in upcoming" :key="u.id" class="list-row">
+        <span class="bubble" :style="{'--c': ICON[u.ch][1]}"><Ic :n="ICON[u.ch][0]" :s="17"/></span>
+        <div class="grow" style="min-width:0"><div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.title.replace(/^\\W+\\s/, '') }}</div><div class="s">{{ whenLabel(u.at) }}</div></div>
+      </div>
+      <div v-if="!upcoming.length" class="list-row"><div class="grow muted" style="font-size:14px">Nothing scheduled. Add a reminder to a task or turn on water reminders.</div></div>
+    </div>
   </div>`,
 };
 
@@ -1515,10 +1974,11 @@ const SettingsView = {
       <div class="grow"><div class="t">Monthly budget</div><input v-model="budgetStr" inputmode="numeric" placeholder="Not set" style="background:none;border:0;outline:none;font-size:15px;padding:4px 0 0;width:100%;color:var(--text-2)" enterkeyhint="done"></div>
       <span class="muted" style="font-weight:600">Toman</span></div></div>
 
-    <div class="label" v-if="Native.notify">Notifications</div>
-    <div class="settings-group" v-if="Native.notify"><button class="list-row" style="width:100%;text-align:left" @click="Native.askNotify(); say('If asked, tap Allow to get reminders')">
+    <div class="label">Notifications</div>
+    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="go('alerts')">
       <span class="bubble" style="--c:var(--c-focus)"><Ic n="bell" :s="18"/></span>
-      <div class="grow"><div class="t">Enable notifications</div><div class="s">For task reminders, focus timer & cycle alerts</div></div><Ic n="chevron-right" :s="18" class="muted"/></button></div>
+      <div class="grow"><div class="t">Notifications</div><div class="s">{{ remReady ? 'On · tasks, water, focus & cycle' : 'Off · tap to set up' }}</div></div>
+      <span class="dot" :style="{background: remReady ? 'var(--c-habits)' : 'var(--c-focus)'}"></span><Ic n="chevron-right" :s="18" class="muted"/></button></div>
 
     <div class="label">Your data</div>
     <div class="settings-group">
@@ -1565,7 +2025,7 @@ const App = {
     ];
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
-      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView,
+      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView,
     };
     const current = computed(() => nav.screen || nav.tab);
     function tab(id) {
@@ -1592,12 +2052,12 @@ const App = {
 
 const app = createApp(App);
 Object.assign(app.config.globalProperties, {
-  S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, MODES, JM, WDL, CAT, justDone,
-  go, say, doUndo, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
+  S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
+  go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
   toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted };
+const live = { focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
@@ -1605,7 +2065,13 @@ app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).compon
 app.mount('#app');
 
 if (!Native.has) {
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.go) window.orbitGo(e.data.go); });
+  }
+  const go = new URLSearchParams(location.search).get('go');
+  if (go && S.settings.onboarded) { window.orbitGo(go); history.replaceState(null, '', location.pathname); }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && PUSH_SUPPORTED) { Rem.perm = Notification.permission; if (Rem.push.token) scheduleSync(0); } });
   // ask the browser not to evict saved data
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   watchEffect(() => { const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = isDark.value ? '#0b0c10' : '#f3f4f8'; });

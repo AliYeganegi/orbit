@@ -1,0 +1,17 @@
+name = "orbit-push"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+VAPID_PUBLIC = "BOIZ_UH6C3MvvJidPGSXJPTlkmSH9JCffuuC-vxe2Gob0fjkMklZnHq5zKvWkAS6AaBabmwPgtldeZWn9YQpP4I"
+VAPID_SUBJECT = "https://aliyeganegi.github.io/orbit/"
+ALLOWED_ORIGINS = "https://aliyeganegi.github.io"
+
+[[durable_objects.bindings]]
+name = "DEVICE"
+class_name = "Device"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Device"]
