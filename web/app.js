@@ -495,7 +495,7 @@ function togglePeriodDay(k) {
 /* ================= reminders ================= */
 // One plan, two deliverers. The plan is derived purely from app data; Android arms it as exact
 // on-device alarms, iPhone (which can't schedule locally) sends it to the Orbit push server.
-const PUSH_URL = window.ORBIT_PUSH_URL || 'https://orbit-push.example.workers.dev'; // override is for local testing
+const PUSH_URL = window.ORBIT_PUSH_URL || 'https://orbit-push.aliyeganegi.workers.dev'; // override is for local testing
 const VAPID_PUBLIC = 'BOIZ_UH6C3MvvJidPGSXJPTlkmSH9JCffuuC-vxe2Gob0fjkMklZnHq5zKvWkAS6AaBabmwPgtldeZWn9YQpP4I';
 const PUSH_SUPPORTED = !AN && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
