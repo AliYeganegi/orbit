@@ -68,7 +68,13 @@ const OUT = process.argv[3];
   await step('money sheet', () => G(`g.ui.task = null; g.ui.tx = {}`));
   await G(`g.ui.tx = null`);
   await step('habit sheet', async () => { await G(`g.nav.tab = 'habits'`); await p.waitForTimeout(300); await p.click('.fab'); });
-  await G(`window.orbitBack()`);
+  await step('add own habit from idea', async () => { await p.click('.sheet .chips.scroll .chip'); await p.click('.sheet .btn.primary'); });
+  const nHabits = await p.evaluate(() => S.habits.length);
+  await step('habit edit mode', () => p.click('.top .chip'));
+  await step('delete a default habit', () => p.click('.habit .del'));
+  assert.equal(await p.evaluate(() => S.habits.length), nHabits - 1, 'default habit deleted');
+  await step('reorder habit', () => p.click('.habit.manage .icon-btn:last-child'));
+  await step('leave edit mode', () => p.click('.top .chip'));
   await step('note editor', async () => { await G(`g.nav.screen = 'notes'`); await p.waitForTimeout(300); await p.click('.fab'); });
   await G(`window.orbitBack()`);
   await step('countdown sheet', async () => { await G(`g.nav.screen = 'countdowns'`); await p.waitForTimeout(300); await p.click('.fab'); });
@@ -78,6 +84,7 @@ const OUT = process.argv[3];
 
   // cycle: tabs, day log, settings
   await step('cycle today tab', () => G(`g.nav.screen = 'cycle'`));
+  await step('tip of the day + shuffle', async () => { const a = await p.textContent('.tip-card p'); await p.click('.tip-card .icon-btn'); await p.waitForTimeout(400); if (a === await p.textContent('.tip-card p')) throw new Error('shuffle did not change the tip'); });
   await step('cycle day sheet', () => p.click('.cyc-hero .btn-row .btn:last-child'));
   await step('log symptom + mood', async () => { await p.click('.sheet .chips .chip >> nth=0'); await p.click('.sheet .flow-pick button:nth-child(4)'); });
   assert.ok(await p.evaluate(() => (S.cycleLog[R.today] || {}).sym && S.cycleDays.includes(R.today)), 'day log saved, medium flow marks period day');
@@ -87,7 +94,15 @@ const OUT = process.argv[3];
   await G(`window.orbitBack()`);
   await step('cycle insights tab', () => p.click('.view .seg button:nth-child(3)'));
   await step('cycle settings sheet', () => p.click('.top .icon-btn:last-child'));
-  await step('pill reminder on', () => G(`g.S.settings.cycle.pill.on = true; g.S.settings.cycle.fertileNotify = true`));
+  await step('pill reminder on', () => G(`g.S.settings.cycle.pill.on = true; g.S.settings.cycle.fertileNotify = true; g.S.settings.cycle.tip.on = true`));
+  const tips = await p.evaluate(() => {
+    const out = []; for (let i = 0; i < 40; i++) { const t = cycleTip(addDays(R.today, i)); out.push(t && t.text); }
+    const repeatsNextDay = out.filter((t, i) => i && t === out[i - 1]).length;
+    return { all: out.every(Boolean), repeatsNextDay, planned: plan.value.filter(r => r.id.startsWith('ctip:')).length, sample: plan.value.find(r => r.id.startsWith('ctip:')) };
+  });
+  assert.ok(tips.all, 'a tip for every day, including predicted future cycles');
+  assert.equal(tips.repeatsNextDay, 0, 'no tip repeats on consecutive days');
+  assert.ok(tips.planned >= 13 && tips.planned <= 14, 'two weeks of daily tip notifications planned (today\'s skipped once its time has passed): ' + tips.planned);
   assert.ok(await p.evaluate(() => plan.value.some(r => r.id.startsWith('pill:')) && plan.value.some(r => r.id.startsWith('ovu:') || r.id.startsWith('fert:'))), 'pill and fertile reminders planned');
   await G(`window.orbitBack()`);
 

@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.6'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.7'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -86,6 +86,18 @@ const PRIOS = [
 ];
 const HABIT_COLORS = ['#7c6cff', '#22c55e', '#3ba4ff', '#ff6b5b', '#f5a524', '#ff5c9a', '#14b8a6', '#a78bfa', '#f97316', '#64748b'];
 const HABIT_EMOJI = ['💧', '📚', '🏋️', '🧘', '🚶', '🍎', '😴', '🧠', '💊', '🎸', '✍️', '🧹', '🌱', '🚭', '☀️', '🙏', '💻', '🎨', '🏃', '🚴', '🥗', '📵', '💰', '❤️'];
+const HABIT_IDEAS = [
+  { name: 'Drink water', emoji: '💧', color: '#3ba4ff' }, { name: 'Read 10 pages', emoji: '📚', color: '#f5a524' },
+  { name: 'Workout', emoji: '🏋️', color: '#ff6b5b' }, { name: 'Meditate', emoji: '🧘', color: '#a78bfa' },
+  { name: 'Walk 8k steps', emoji: '🚶', color: '#22c55e' }, { name: 'No sugar', emoji: '🍬', color: '#ff5c9a' },
+  { name: 'Sleep before 12', emoji: '😴', color: '#7c6cff' }, { name: 'Learn something', emoji: '🧠', color: '#14b8a6' },
+  { name: 'Stretch 5 minutes', emoji: '🤸', color: '#f97316' }, { name: 'Eat a fruit', emoji: '🍎', color: '#ef4444' },
+  { name: 'Journal', emoji: '✍️', color: '#64748b' }, { name: 'No phone in bed', emoji: '📵', color: '#7c6cff' },
+  { name: 'Take vitamins', emoji: '💊', color: '#22c55e' }, { name: 'Practice English', emoji: '🗣️', color: '#3ba4ff' },
+  { name: 'Pray', emoji: '🙏', color: '#a78bfa' }, { name: 'Save money', emoji: '💰', color: '#14b8a6' },
+  { name: 'Call family', emoji: '❤️', color: '#ff5c9a' }, { name: 'Tidy up 10 min', emoji: '🧹', color: '#f5a524' },
+  { name: 'Code for 30 min', emoji: '💻', color: '#7c6cff' }, { name: 'Go outside', emoji: '☀️', color: '#f5a524' },
+];
 const HABIT_SUGGEST = [
   { name: 'Drink water', emoji: '💧', color: '#3ba4ff' },
   { name: 'Read 10 pages', emoji: '📚', color: '#f5a524' },
@@ -169,7 +181,7 @@ const defaults = () => ({
     name: '', theme: 'system', onboarded: false,
     waterGoal: 8, glassMl: 250, budget: 0,
     focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
-    cycle: { name: '', len: 28, plen: 5, notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' } },
+    cycle: { name: '', len: 28, plen: 5, notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' }, tip: { on: false, time: '09:00' } },
     notify: { tasks: true, focus: true },
     sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
@@ -185,7 +197,7 @@ function hydrate(raw) {
   d.timer = { ...defaults().timer, ...(raw.timer || {}) };
   const s = raw.settings || {};
   const ds = defaults().settings;
-  d.settings = { ...ds, ...s, sms: { ...ds.sms, ...(s.sms || {}) }, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}), pill: { ...ds.cycle.pill, ...((s.cycle || {}).pill || {}) } }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
+  d.settings = { ...ds, ...s, sms: { ...ds.sms, ...(s.sms || {}) }, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}), pill: { ...ds.cycle.pill, ...((s.cycle || {}).pill || {}) }, tip: { ...ds.cycle.tip, ...((s.cycle || {}).tip || {}) } }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
   return d;
 }
 function load() { try { return hydrate(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return defaults(); } }
@@ -745,6 +757,40 @@ function chanceOn(k) {
   return { l: 'Low', v: 0 };
 }
 
+/** Cycle day and phase for any date, including future ones (uses predicted starts past the next period). */
+function anyDayInfo(k) {
+  const c = cyc.value;
+  if (!c.has) return null;
+  if (k < c.next || c.toNext < 0) return cycleDayInfo(k);
+  const n = Math.floor(diffDays(c.next, k) / c.len), start = addDays(c.next, n * c.len), next = addDays(start, c.len);
+  const day = diffDays(start, k) + 1, toNext = diffDays(k, next), ov = addDays(next, -14);
+  const phase = day <= c.plen ? 'period' : k >= addDays(ov, -5) && k <= addDays(ov, 1) ? 'fertile' : k < ov ? 'follicular' : toNext <= 3 ? 'pms' : 'luteal';
+  return { day, phase, ov, toNext, start };
+}
+// small seeded PRNG so each cycle gets its own shuffled order and tips don't repeat day to day
+function seeded(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const strHash = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+/** The tip for a date: a special one for key days, otherwise a different pick from the phase's pool each day. */
+function cycleTip(k, offset = 0) {
+  const info = anyDayInfo(k);
+  if (!info) return null;
+  const mode = S.settings.cycle.name.trim() ? 'partner' : 'self';
+  const sp = OrbitTips.special[mode];
+  let pool = null;
+  if (!offset) {
+    if (info.day === 1) pool = sp.day1;
+    else if (info.day === 2 && info.phase === 'period') pool = sp.day2;
+    else if (k === info.ov) pool = sp.ovulation;
+    else if (info.toNext === 1) pool = sp.beforePeriod;
+  }
+  if (pool) return { text: pool[strHash(k) % pool.length], phase: info.phase, day: info.day };
+  pool = OrbitTips[mode][info.phase] || OrbitTips[mode].luteal;
+  const rnd = seeded(strHash(info.start + info.phase + mode));
+  const order = pool.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  return { text: pool[order[(info.day - 1 + offset) % order.length]], phase: info.phase, day: info.day };
+}
+
 const cycStats = computed(() => {
   const c = cyc.value;
   const lens = c.lens.slice(-6), dev = sd(lens);
@@ -859,6 +905,15 @@ const plan = computed(() => {
     out.push({ id: 'fert:' + c.fStart, at: at(c.fStart, 9), ch: 'cycle', title: goal === 'avoid' ? '🛡️ Fertile window starts today' : '🌱 Fertile window starts today',
       body: goal === 'avoid' ? 'Pregnancy is more likely for the next 6 days. Use protection.' : goal === 'conceive' ? 'Your best chances are over the next 6 days.' : 'The fertile window runs for about 6 days.', go: 'cycle' });
     out.push({ id: 'ovu:' + c.ov, at: at(c.ov, 9), ch: 'cycle', title: '✨ Ovulation day (estimated)', body: goal === 'conceive' ? 'Today and yesterday are the most fertile days.' : 'Today is the estimated ovulation day.', go: 'cycle' });
+  }
+  if (c.has && cs.tip.on && /^\d\d:\d\d$/.test(cs.tip.time)) {
+    const [h, m] = cs.tip.time.split(':').map(Number), nm = cs.name.trim();
+    for (let i = 0; i < 14; i++) {
+      const k = addDays(R.today, i), tip = cycleTip(k);
+      if (!tip) continue;
+      const d = parseKey(k); d.setHours(h, m, 0, 0);
+      out.push({ id: 'ctip:' + k, at: d.getTime(), ch: 'cycle', title: (nm ? '💗 ' + nm + ' · day ' : '🌸 Day ') + tip.day + ' · ' + PHASES[tip.phase].l, body: tip.text, go: 'cycle' });
+    }
   }
   if (cs.pill.on && /^\d\d:\d\d$/.test(cs.pill.time)) {
     const [h, m] = cs.pill.time.split(':').map(Number);
@@ -1648,11 +1703,21 @@ const HabitsView = {
       else S.habits.push({ id: uid(), name: d.name.trim(), emoji: d.emoji, color: d.color, log: {}, created: Date.now() });
       sheet.value = false;
     }
-    function remove() {
-      const h = editing.value, i = S.habits.indexOf(h);
-      S.habits.splice(i, 1); sheet.value = false;
-      say('Habit deleted', () => S.habits.splice(i, 0, h));
+    function removeHabit(h) {
+      const i = S.habits.indexOf(h);
+      if (i < 0) return;
+      S.habits.splice(i, 1);
+      say('"' + h.name + '" deleted', () => S.habits.splice(i, 0, h));
     }
+    function remove() { const h = editing.value; sheet.value = false; removeHabit(h); }
+    const managing = ref(false);
+    function move(h, dir) {
+      const i = S.habits.indexOf(h), j = i + dir;
+      if (j < 0 || j >= S.habits.length) return;
+      S.habits.splice(i, 1); S.habits.splice(j, 0, h); Native.vibrate(6);
+    }
+    const ideas = computed(() => HABIT_IDEAS.filter(x => !S.habits.some(h => h.name.toLowerCase() === x.name.toLowerCase())).slice(0, 12));
+    function useIdea(x) { Object.assign(d, x); Native.vibrate(6); }
     const heat = computed(() => {
       const t = R.today, start = addDays(t, -satIdx(t) - 7 * 17);
       return Array.from({ length: 126 }, (_, i) => { const k = addDays(start, i); return { k, fut: k > t }; });
@@ -1662,15 +1727,28 @@ const HabitsView = {
       let n30 = 0; for (let i = 0; i < 30; i++) if (h.log[addDays(R.today, -i)]) n30++;
       return { cur: streak(h), best: bestStreak(h), rate: Math.round(n30 / 30 * 100), total: Object.keys(h.log).length };
     });
-    return { sheet, d, editing, week, done, openNew, openEdit, save, remove, heat, stats, HABIT_COLORS, HABIT_EMOJI };
+    return { sheet, d, editing, week, done, openNew, openEdit, save, remove, removeHabit, managing, move, ideas, useIdea, heat, stats, HABIT_COLORS, HABIT_EMOJI };
   },
   template: `<div class="view" style="--acc:var(--c-habits)">
     <header class="top"><div class="grow"><h1>Habits</h1>
       <div class="sub" v-if="S.habits.length"><b>{{ done }} of {{ S.habits.length }}</b> done today{{ done === S.habits.length ? ' · perfect day 🔥' : '' }}</div>
-      <div class="sub" v-else>Small steps, every day</div></div></header>
+      <div class="sub" v-else>Small steps, every day</div></div>
+      <button v-if="S.habits.length" class="chip" :class="{on: managing}" style="margin-top:6px" @click="managing = !managing">{{ managing ? 'Done' : 'Edit' }}</button></header>
     <template v-if="S.habits.length">
-      <TransitionGroup name="list" tag="div" class="stack rel">
-        <div v-for="h in S.habits" :key="h.id" class="card habit tap" :style="{'--c': h.color}" @click="openEdit(h)">
+      <TransitionGroup v-if="managing" name="list" tag="div" class="stack rel">
+        <div v-for="(h, i) in S.habits" :key="h.id" class="card habit manage" :style="{'--c': h.color}">
+          <div class="h-top">
+            <button class="del" @click="removeHabit(h)" :aria-label="'Delete ' + h.name"><Ic n="minus" :s="18" :w="3"/></button>
+            <div class="em" style="width:42px;height:42px;font-size:22px">{{ h.emoji }}</div>
+            <div class="grow tap" @click="openEdit(h)"><div class="nm">{{ h.name }}</div><div class="st">Tap to rename or change icon</div></div>
+            <button class="icon-btn plain" :disabled="i === 0" @click="move(h, -1)" aria-label="Move up"><Ic n="chevron-up" :s="18"/></button>
+            <button class="icon-btn plain" :disabled="i === S.habits.length - 1" @click="move(h, 1)" aria-label="Move down"><Ic n="chevron-down" :s="18"/></button>
+          </div>
+        </div>
+      </TransitionGroup>
+      <TransitionGroup v-else name="list" tag="div" class="stack rel">
+        <Swipe v-for="h in S.habits" :key="h.id" @remove="removeHabit(h)" @tap="openEdit(h)">
+        <div class="card habit" :style="{'--c': h.color}">
           <div class="h-top">
             <div class="em">{{ h.emoji }}</div>
             <div class="grow" style="flex:1;min-width:0"><div class="nm">{{ h.name }}</div>
@@ -1681,7 +1759,9 @@ const HabitsView = {
             <button v-for="w in week" :key="w.k" class="h-day" :class="{on: h.log[w.k], today: w.k === R.today}" @click.stop="toggleHabit(h, w.k)"><small>{{ w.l }}</small><i></i></button>
           </div>
         </div>
+        </Swipe>
       </TransitionGroup>
+      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">{{ managing ? 'Delete with − · reorder with the arrows' : 'Tap a habit to edit · swipe left to delete · Edit to reorder' }}</p>
     </template>
     <Empty v-else e="🌱" t="Build your first habit" s="Track daily wins and watch your streaks grow.">
       <button class="btn primary" @click="openNew"><Ic n="plus" :s="18"/>New habit</button></Empty>
@@ -1698,8 +1778,12 @@ const HabitsView = {
           <span class="flabel">Last 18 weeks · {{ stats.total }} check-ins</span>
           <div class="heat" :style="{'--c': d.color}"><i v-for="c in heat" :key="c.k" :class="{on: editing.log[c.k], fut: c.fut}"></i></div>
         </template>
+        <template v-if="!editing && ideas.length">
+          <span class="flabel" style="margin-top:4px">Ideas</span>
+          <div class="chips scroll" style="margin:0 -20px;padding:2px 20px"><button v-for="x in ideas" :key="x.name" class="chip" :class="{on: d.name === x.name}" @click="useIdea(x)">{{ x.emoji }} {{ x.name }}</button></div>
+        </template>
         <span class="flabel">Name</span>
-        <input class="field" v-model="d.name" placeholder="e.g. Read 10 pages" enterkeyhint="done">
+        <input class="field" v-model="d.name" placeholder="Or write your own, e.g. Read 10 pages" enterkeyhint="done">
         <span class="flabel">Icon</span>
         <div class="emoji-grid"><button v-for="e in HABIT_EMOJI" :key="e" :class="{on: d.emoji === e}" @click="d.emoji = e">{{ e }}</button></div>
         <span class="flabel">Color</span>
@@ -2297,7 +2381,9 @@ const CycleView = {
         cover: b.cover ? y(b.cover) : null, shiftX: b.shift ? x(b.shift.d) : null };
     });
     const history = computed(() => [...cycStats.value.cycles].reverse().slice(0, 10));
-    return { tab, cfg, dayOpen, guide, cm, shift, cells, jRange, who, startDate, logStart, primary, periodToday, tapDay, pk, g, chance, goalLine, todaySummary, upcoming, maxLen, bbtPath, history, cs, WK, MONTHS, PHASES, GOALS, SYMPTOMS };
+    const tipShift = ref(0);
+    const tip = computed(() => cycleTip(R.today, tipShift.value));
+    return { tip, tipShift, tab, cfg, dayOpen, guide, cm, shift, cells, jRange, who, startDate, logStart, primary, periodToday, tapDay, pk, g, chance, goalLine, todaySummary, upcoming, maxLen, bbtPath, history, cs, WK, MONTHS, PHASES, GOALS, SYMPTOMS };
   },
   template: `<div class="view" style="--acc:var(--c-cycle)">
     <Head title="Cycle" :sub="who ? 'Tracking for ' + who + ' 💗' : 'Your period & fertility tracker'"><button class="icon-btn" @click="cfg = true" aria-label="Cycle settings"><Ic n="settings" :s="19"/></button></Head>
@@ -2338,6 +2424,13 @@ const CycleView = {
             <button class="btn" :class="primary.ghost ? '' : 'primary'" @click="periodToday"><Ic n="droplet" :s="17"/>{{ primary.l }}</button>
             <button class="btn" @click="dayOpen = R.today"><Ic n="plus" :s="17"/>Log</button>
           </div>
+        </div>
+
+        <div v-if="tip" class="card tip-card" :style="{'--pc': PHASES[tip.phase].c}">
+          <div class="sec" style="margin-bottom:6px"><h3><Ic n="quote" :s="16"/>{{ who ? 'Kind idea for today' : 'Tip for today' }}</h3>
+            <button class="icon-btn plain" @click="tipShift++; Native.vibrate(6)" aria-label="Another tip"><Ic n="shuffle" :s="17"/></button></div>
+          <Transition name="fade" mode="out-in"><p :key="tip.text">{{ tip.text }}</p></Transition>
+          <button v-if="!cs.tip.on" class="link-btn" style="margin:8px 0 0;padding:0" @click="cs.tip.on = true; Native.has && Native.askNotify(); say('You\\'ll get a tip every day at ' + cs.tip.time)">Get a tip like this every morning →</button>
         </div>
 
         <div class="card tap" @click="dayOpen = R.today">
@@ -2483,6 +2576,8 @@ const CycleView = {
         <div class="settings-group" style="box-shadow:none">
           <div class="list-row"><div class="grow"><div class="t">Period coming</div><div class="s">2 days before and on the expected day</div></div><Toggle v-model="cs.notify"/></div>
           <div class="list-row"><div class="grow"><div class="t">Fertile window & ovulation</div><div class="s">When the fertile window starts and on ovulation day</div></div><Toggle v-model="cs.fertileNotify"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Daily tip</div><div class="s">{{ cs.tip.on ? 'A new suggestion every day at ' + cs.tip.time : 'A kind, phase-based suggestion each day' }}</div></div><Toggle v-model="cs.tip.on"/></div>
+          <div v-if="cs.tip.on" class="list-row"><div class="grow"><div class="t">Tip time</div></div><label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ cs.tip.time }}<input type="time" v-model="cs.tip.time"></label></div>
           <div class="list-row"><div class="grow"><div class="t">Daily pill reminder</div><div class="s">{{ cs.pill.on ? 'Every day at ' + cs.pill.time : 'Off' }}</div></div><Toggle v-model="cs.pill.on"/></div>
           <div v-if="cs.pill.on" class="list-row"><div class="grow"><div class="t">Pill time</div></div><label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ cs.pill.time }}<input type="time" v-model="cs.pill.time"></label></div>
         </div>

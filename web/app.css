@@ -733,3 +733,18 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 .split-btn .set { display: inline-block; margin-top: 4px; font-size: 11.5px; font-weight: 700; background: rgba(255,255,255,.22); padding: 2px 8px; border-radius: 999px; }
 .shake { animation: shake .4s; }
 @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+
+/* ---------- habits: manage mode ---------- */
+.habit.manage .h-top { gap: 10px; }
+.habit .del { width: 30px; height: 30px; border-radius: 50%; background: var(--c-danger); color: #fff; display: grid; place-items: center; flex-shrink: 0; transition: transform .15s; }
+.habit .del:active { transform: scale(.85); }
+.habit.manage .icon-btn[disabled] { opacity: .25; }
+.swipe > .swipe-fg > .card { margin: 0; }
+.swipe:has(.habit) { border-radius: var(--r-lg); }
+.swipe:has(.habit) .swipe-bg { border-radius: var(--r-lg); }
+
+/* ---------- cycle: tip of the day ---------- */
+.tip-card { background: linear-gradient(140deg, color-mix(in srgb, var(--pc) 14%, var(--surface)), var(--surface) 70%); }
+.tip-card h3 .ic { color: var(--pc); }
+.tip-card p { font-size: 15.5px; line-height: 1.55; font-weight: 550; color: var(--text); }
+.tip-card .link-btn { color: var(--pc); font-size: 13.5px; }
