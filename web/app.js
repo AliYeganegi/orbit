@@ -1,4 +1,5 @@
 /* Orbit — everything in one place */
+const APP_VERSION = '1.5'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -2784,7 +2785,7 @@ const SettingsView = {
       <button class="list-row" style="width:100%;text-align:left" @click="reset = true"><span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
         <div class="grow"><div class="t" style="color:var(--c-danger)">Erase everything</div><div class="s">{{ counts }} items stored on this phone</div></div></button>
     </div>
-    <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit 1.0 · Everything stays on your device 🔒</p>
+    <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · Everything stays on your device 🔒</p>
 
     <Sheet :open="imp" title="Restore backup" @close="imp = false">
       <p class="muted" style="font-size:14px;margin-bottom:12px">Paste the backup text below. This replaces all current data.</p>
@@ -2847,7 +2848,7 @@ const App = {
 
 const app = createApp(App);
 Object.assign(app.config.globalProperties, {
-  S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
+  APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
   clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });

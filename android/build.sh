@@ -8,7 +8,7 @@ SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
 BT="$SDK/build-tools/34.0.0"
 JAR="$SDK/platforms/android-34/android.jar"
 VERSION_CODE="${VERSION_CODE:-1}"
-VERSION_NAME="${VERSION_NAME:-1.0}"
+VERSION_NAME="${VERSION_NAME:-$(grep -oP "const APP_VERSION = '\K[^']+" ../web/app.js)}"
 # DEBUG=1 makes the WebView inspectable over adb (chrome://inspect); never ship it
 
 rm -rf build && mkdir -p build/gen build/classes build/dex build/assets
