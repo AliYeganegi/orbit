@@ -721,3 +721,15 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 .bbt .cover { stroke: var(--muted); stroke-dasharray: 4 4; stroke-width: 1; }
 .bbt .shift { stroke: #14b8a6; stroke-width: 1.5; stroke-dasharray: 3 3; }
 .cal button.lg::before { content: ""; position: absolute; top: 3px; right: 22%; width: 5px; height: 5px; border-radius: 50%; background: var(--c-mood); }
+
+/* ---------- money: editable balance & budget ---------- */
+.budget-line { display: block; width: 100%; text-align: left; color: inherit; margin-top: 2px; border-radius: 12px; }
+.budget-line .bl { display: flex; align-items: center; gap: 6px; font-size: 12.5px; margin-top: 6px; opacity: .92; font-weight: 600; }
+.budget-line:active { opacity: .7; }
+.money-hero .split > .split-btn { flex: 1; background: rgba(255,255,255,.14); border-radius: 14px; padding: 10px 12px; text-align: left; color: #fff; transition: background .2s, transform .15s; }
+.money-hero .split > .split-btn:active { transform: scale(.97); background: rgba(255,255,255,.22); }
+.split-btn small { font-size: 12px; opacity: .85; font-weight: 600; display: flex; align-items: center; gap: 4px; }
+.split-btn b { font-size: 16px; font-weight: 750; display: block; margin-top: 2px; }
+.split-btn .set { display: inline-block; margin-top: 4px; font-size: 11.5px; font-weight: 700; background: rgba(255,255,255,.22); padding: 2px 8px; border-radius: 999px; }
+.shake { animation: shake .4s; }
+@keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }

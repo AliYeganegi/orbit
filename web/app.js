@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.5'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.6'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -171,10 +171,10 @@ const defaults = () => ({
     focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
     cycle: { name: '', len: 28, plen: 5, notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' } },
     notify: { tasks: true, focus: true },
-    sms: { on: false, unit: 'rial', last: 0 },
+    sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
   },
-  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [],
+  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [], accounts: [],
   water: {}, mood: {}, focusLog: {},
   timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
@@ -207,9 +207,15 @@ try {
   }
 } catch (e) {}
 
+// one-off (1.6): earlier versions imported 30 days of SMS as drafts; only keep what the user already categorized
+if (S.settings.sms.on && !S.settings.sms.since) {
+  S.money = S.money.filter(t => !(t.src === 'sms' && t.pending));
+  S.settings.sms.since = Date.now(); S.settings.sms.last = Date.now();
+}
+
 const R = reactive({ now: Date.now(), today: keyOf(new Date()), sysDark: Native.sysDark() });
 const nav = reactive({ tab: 'today', screen: null });
-const ui = reactive({ task: null, tx: null });
+const ui = reactive({ task: null, tx: null, accounts: null, budget: false });
 const toast = reactive({ msg: '', undo: null, id: 0 });
 let toastT;
 function say(msg, undo) {
@@ -440,6 +446,26 @@ function jMonthKeys(y, m) {
 }
 const jShift = (y, m, n) => { m += n; while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; } return { y, m }; };
 
+/* accounts: the balance is the user's (or the bank's) number; the app only applies transactions after it */
+// when a transaction happened, for deciding whether a balance snapshot already includes it
+function txAt(t) {
+  if (t.time) { const d = parseKey(t.date); const [h, m] = t.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); }
+  if (t.created && keyOf(new Date(t.created)) === t.date) return t.created;
+  return parseKey(t.date).getTime() + 12 * 3600e3;
+}
+function acctBalance(a) {
+  let b = a.balance || 0;
+  for (const t of S.money) if (t.acct === a.id && txAt(t) > (a.at || 0)) b += t.type === 'in' ? t.amount : -t.amount;
+  return b;
+}
+const totalBalance = computed(() => S.accounts.reduce((s, a) => s + acctBalance(a), 0));
+function acctFor(bank, card) {
+  const tail = (card || '').replace(/\D/g, '').slice(-4);
+  let a = S.accounts.find(x => x.bank === bank && (x.tail || '') === tail) || (!tail && S.accounts.find(x => x.bank === bank));
+  if (!a) { a = { id: uid(), name: (bank || 'Bank') + (tail ? ' ••' + tail : ''), bank, tail, balance: 0, at: 0, src: 'sms' }; S.accounts.push(a); }
+  return a;
+}
+
 /* bank SMS → draft transactions (Android) */
 const Sms = reactive({ granted: false, blocked: false, busy: false });
 function smsRefresh() {
@@ -455,8 +481,11 @@ function smsImport(list) {
     const p = OrbitSms.parse(m.body, { sender: m.sender, unit: S.settings.sms.unit });
     if (!p || !p.amount) continue;
     const d = new Date(m.ts);
+    const a = acctFor(p.bank, p.card);
+    // the bank's "مانده" already includes this transaction, so it becomes the new balance snapshot
+    if (p.balance != null && m.ts >= (a.at || 0)) { a.balance = p.balance; a.at = m.ts; a.src = 'sms'; }
     const tx = { id: uid(), type: p.type, amount: p.amount, cat: '', note: '', date: keyOf(d), time: pad(d.getHours()) + ':' + pad(d.getMinutes()),
-      created: m.ts, pending: true, src: 'sms', bank: p.bank, card: p.card, balance: p.balance, sms: h };
+      created: m.ts, pending: true, src: 'sms', bank: p.bank, card: p.card, balance: p.balance, sms: h, acct: a.id };
     S.money.unshift(tx); added.push(tx);
   }
   S.smsSeen = [...seen].slice(-1500);
@@ -468,8 +497,11 @@ function smsSync() {
   if (!Sms.granted) return [];
   let list = [];
   try { list = JSON.parse(AN.smsDrain()); } catch (e) {}
-  const since = S.settings.sms.last || Date.now() - 30 * 864e5;
-  try { list = list.concat(JSON.parse(AN.smsScan(String(since - 3600e3)))); } catch (e) {}
+  // only messages that arrived after the user turned this on; the small overlap covers app restarts
+  const floor = S.settings.sms.since || Date.now();
+  const since = Math.max(floor, (S.settings.sms.last || floor) - 3600e3);
+  try { list = list.concat(JSON.parse(AN.smsScan(String(since)))); } catch (e) {}
+  list = list.filter(m => m.ts >= floor);
   S.settings.sms.last = Date.now();
   return smsImport(list);
 }
@@ -482,11 +514,10 @@ function smsEnable() {
   AN.smsRequest();
 }
 function smsTurnOn() {
-  S.settings.sms.on = true; S.settings.sms.last = 0;
+  S.settings.sms.on = true; S.settings.sms.since = Date.now(); S.settings.sms.last = Date.now();
   AN.smsEnable(true);
-  const added = smsSync();
   Sms.busy = false;
-  say(added.length ? added.length + ' bank transaction' + (added.length > 1 ? 's' : '') + ' found from the last 30 days' : 'On. New bank SMS will show up here automatically');
+  say('On. New bank SMS will show up here automatically');
 }
 function smsDisable() { S.settings.sms.on = false; if (AN && AN.smsEnable) AN.smsEnable(false); say('Bank SMS import turned off'); }
 window.orbitSmsPermission = granted => {
@@ -1191,7 +1222,8 @@ const TxSheet = {
     const d = reactive({});
     watch(() => ui.tx, v => {
       if (!v) return;
-      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {});
+      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null, acct: S.accounts.length ? S.accounts[0].id : '' }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {});
+      need.value = '';
     });
     const isEdit = computed(() => ui.tx && ui.tx.ref);
     const cats = computed(() => (d.type === 'in' ? CATS_IN : CATS_OUT));
@@ -1213,11 +1245,15 @@ const TxSheet = {
       Native.vibrate(12);
       say('Filled from SMS: ' + fmt(p.amount) + ' T' + (p.bank ? ' · ' + p.bank : ''));
     }
+    const need = ref('');
     function save() {
-      if (!d.amount || !d.cat) return;
-      const rec = { type: d.type, amount: d.amount, cat: d.cat, note: d.note.trim(), date: d.date || R.today, time: d.time || '', pending: false, bank: d.bank || '', card: d.card || '', balance: d.balance };
+      // say what's missing instead of greying out the button
+      if (!d.amount) { need.value = 'amount'; Native.vibrate(30); return; }
+      if (!d.cat) { need.value = 'cat'; Native.vibrate(30); document.querySelector('.sheet .cat-grid') && document.querySelector('.sheet .cat-grid').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+      const rec = { type: d.type, amount: d.amount, cat: d.cat, note: d.note.trim(), date: d.date || R.today, time: d.time || '', pending: false, bank: d.bank || '', card: d.card || '', balance: d.balance, acct: d.acct || '' };
       if (isEdit.value) Object.assign(ui.tx.ref, rec);
       else S.money.unshift({ id: uid(), created: Date.now(), ...rec });
+      say(isEdit.value ? 'Saved' : (d.type === 'in' ? 'Income' : 'Expense') + ' added');
       Native.vibrate(12);
       ui.tx = null;
     }
@@ -1226,7 +1262,8 @@ const TxSheet = {
       const i = S.money.indexOf(t); S.money.splice(i, 1);
       say('Transaction deleted', () => S.money.splice(i, 0, t));
     }
-    return { d, amt, cats, save, remove, isEdit, bump, paste };
+    watch(() => [d.amount, d.cat], () => { need.value = ''; });
+    return { d, amt, cats, save, remove, isEdit, bump, paste, need };
   },
   template: `<Sheet :open="!!ui.tx" :title="d.pending ? 'Add details' : isEdit ? 'Edit transaction' : 'New transaction'" @close="ui.tx = null">
     <div :style="{'--acc': d.type === 'in' ? 'var(--c-habits)' : 'var(--c-money)'}">
@@ -1241,18 +1278,91 @@ const TxSheet = {
       <div class="chips" style="justify-content:center;margin-top:10px">
         <button class="chip" v-for="n in [50000, 100000, 500000, 1000000]" :key="n" @click="bump(n)">+{{ short(n) }}</button>
       </div>
-      <span class="flabel">Category<span v-if="!d.cat" style="color:var(--c-mood)"> · pick one</span></span>
-      <div class="cat-grid">
+      <div v-if="need === 'amount'" class="hint warn"><span class="grow">Enter an amount to save</span></div>
+      <span class="flabel">Category</span>
+      <div v-if="need === 'cat'" class="hint warn" style="margin:0 0 10px"><span class="grow">Choose a category to save</span></div>
+      <div class="cat-grid" :class="{shake: need === 'cat'}">
         <button v-for="c in cats" :key="c.id" :class="{on: d.cat === c.id}" @click="d.cat = c.id"><span class="e">{{ c.e }}</span>{{ c.l }}</button>
       </div>
+      <template v-if="S.accounts.length">
+        <span class="flabel">Account</span>
+        <div class="chips"><button v-for="a in S.accounts" :key="a.id" class="chip" :class="{on: d.acct === a.id}" @click="d.acct = a.id">{{ a.name }}</button>
+          <button class="chip" :class="{on: !d.acct}" @click="d.acct = ''">None</button></div>
+      </template>
       <span class="flabel">Note</span>
       <input class="field" v-model="d.note" placeholder="e.g. Lunch with Sara" enterkeyhint="done">
       <span class="flabel">Date</span>
       <DatePick v-model="d.date" :none="false" past/>
       <div class="btn-row">
         <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
-        <button class="btn primary" :disabled="!d.amount || !d.cat" @click="save">{{ d.pending ? 'Save' : isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
+        <button class="btn primary" @click="save">{{ d.pending ? 'Save' : isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
       </div>
+    </div>
+  </Sheet>`,
+};
+
+const AccountsSheet = {
+  setup() {
+    const edit = ref(null);
+    const f = reactive({ name: '', bal: 0 });
+    const balStr = computed({ get: () => (f.bal ? fmt(f.bal) : ''), set: v => { const neg = /^\s*[-−]/.test(v); const n = parseInt(toEn(v).replace(/\D/g, '') || '0', 10); f.bal = neg ? -n : n; } });
+    function open(a) { edit.value = a || 'new'; Object.assign(f, a ? { name: a.name, bal: acctBalance(a) } : { name: '', bal: 0 }); }
+    watch(() => ui.accounts, v => { edit.value = null; if (v === 'new') open(null); });
+    function save() {
+      const name = f.name.trim() || 'Account';
+      if (edit.value === 'new') S.accounts.push({ id: uid(), name, bank: '', tail: '', balance: f.bal, at: Date.now(), src: 'user' });
+      else Object.assign(edit.value, { name, balance: f.bal, at: Date.now(), src: 'user' });
+      edit.value = null; Native.vibrate(10); say('Balance saved');
+      if (ui.accounts === 'new') ui.accounts = null;
+    }
+    function remove() {
+      const a = edit.value, i = S.accounts.indexOf(a);
+      S.accounts.splice(i, 1); edit.value = null;
+      say('Account removed', () => S.accounts.splice(i, 0, a));
+    }
+    return { edit, f, balStr, open, save, remove, acctBalance };
+  },
+  template: `<Sheet :open="!!ui.accounts" :title="edit ? (edit === 'new' ? 'New account' : 'Edit account') : 'Accounts'" @close="ui.accounts = null">
+    <div style="--acc:var(--c-money)">
+      <template v-if="!edit">
+        <p class="muted" style="font-size:13.5px;margin:-2px 2px 12px">Set each balance to what your bank shows. Orbit then adds and subtracts your transactions, and bank SMS update it automatically.</p>
+        <div class="settings-group" style="box-shadow:none">
+          <button v-for="a in S.accounts" :key="a.id" class="list-row" style="width:100%;text-align:left" @click="open(a)">
+            <span class="bubble" style="--c:var(--c-money)"><Ic n="wallet" :s="18"/></span>
+            <div class="grow"><div class="t">{{ a.name }}</div><div class="s">{{ a.at ? (a.src === 'sms' ? 'Updated from bank SMS ' : 'Set by you ') + ago(a.at).toLowerCase() : 'Tap to set the balance' }}</div></div>
+            <b style="white-space:nowrap">{{ fmt(acctBalance(a)) }}</b><Ic n="pencil" :s="15" class="muted"/></button>
+          <div v-if="!S.accounts.length" class="list-row"><div class="grow muted" style="font-size:14px">No accounts yet. Add one to track your real balance.</div></div>
+        </div>
+        <button class="btn block" style="margin-top:14px" @click="open(null)"><Ic n="plus" :s="17"/>Add account</button>
+      </template>
+      <template v-else>
+        <span class="flabel" style="margin-top:4px">Name</span>
+        <input class="field" v-model="f.name" placeholder="e.g. Pasargad card, Cash" enterkeyhint="next">
+        <span class="flabel">Current balance</span>
+        <div class="amount-in" style="padding-top:0"><input v-model="balStr" inputmode="numeric" placeholder="0" enterkeyhint="done" @keydown.enter="save"><div class="u">{{ f.bal ? words(Math.abs(f.bal)) : 'Toman, as your bank shows it right now' }}</div></div>
+        <div class="btn-row">
+          <button v-if="edit !== 'new'" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove" aria-label="Delete account"><Ic n="trash-2"/></button>
+          <button class="btn" style="flex:0 0 auto" @click="edit = null">Back</button>
+          <button class="btn primary" @click="save">Save</button>
+        </div>
+      </template>
+    </div>
+  </Sheet>`,
+};
+
+const BudgetSheet = {
+  setup() {
+    const v = ref(0);
+    watch(() => ui.budget, o => { if (o) v.value = S.settings.budget || 0; });
+    const str = computed({ get: () => (v.value ? fmt(v.value) : ''), set: x => { v.value = parseInt(toEn(x).replace(/\D/g, '') || '0', 10); } });
+    function save() { S.settings.budget = v.value; ui.budget = false; say(v.value ? 'Budget set to ' + short(v.value) : 'Budget removed'); }
+    return { str, v, save };
+  },
+  template: `<Sheet :open="ui.budget" title="Monthly budget" @close="ui.budget = false">
+    <div style="--acc:var(--c-money)">
+      <div class="amount-in"><input v-model="str" inputmode="numeric" placeholder="0" enterkeyhint="done" @keydown.enter="save"><div class="u">{{ v ? words(v) + ' a month' : 'How much do you want to spend per month?' }}</div></div>
+      <div class="chips" style="justify-content:center;margin-top:10px"><button class="chip" v-for="n in [10e6, 20e6, 30e6, 50e6]" :key="n" @click="v = n">{{ short(n) }}</button></div>
+      <div class="btn-row"><button v-if="S.settings.budget" class="btn" @click="v = 0; save()">Remove</button><button class="btn primary" @click="save">Save</button></div>
     </div>
   </Sheet>`,
 };
@@ -1644,7 +1754,7 @@ const MoneyView = {
         <div v-for="t in review" :key="t.id" class="rv">
           <div class="rv-top tap" @click="ui.tx = {ref: t}">
             <div class="grow"><b :class="{in: t.type === 'in'}">{{ t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }} <small>T</small></b>
-              <div class="s">{{ t.bank || 'Bank' }} · {{ rel(t.date) }} {{ t.time }}{{ t.card ? ' · ' + t.card : '' }}</div></div>
+              <div class="s">{{ t.bank || 'Bank' }}{{ t.card ? ' ••' + t.card.replace(/\D/g, '').slice(-4) : '' }} · {{ rel(t.date) }} {{ t.time }}</div></div>
             <button class="icon-btn plain" @click.stop="dismissTx(t)" aria-label="Not a real transaction"><Ic n="x" :s="17"/></button>
           </div>
           <div class="chips scroll" style="margin:8px -16px 0;padding:2px 16px">
@@ -1665,13 +1775,19 @@ const MoneyView = {
     <div class="card money-hero">
       <div class="k">Spent</div>
       <div class="amt">{{ fmt(spent) }}<small>T</small></div>
-      <template v-if="budget">
+      <button v-if="budget" class="budget-line" @click="ui.budget = true">
         <div class="bar"><i :style="{width: Math.min(100, spent / budget * 100) + '%', background: spent > budget ? '#ffd1d1' : ''}"></i></div>
-        <div style="font-size:12.5px;margin-top:6px;opacity:.9;font-weight:600">{{ spent > budget ? short(spent - budget) + ' over budget' : short(budget - spent) + ' left of ' + short(budget) + ' budget' }}</div>
-      </template>
+        <div class="bl">{{ spent > budget ? short(spent - budget) + ' over budget' : short(budget - spent) + ' left of ' + short(budget) + ' budget' }}<Ic n="pencil" :s="12"/></div>
+      </button>
+      <button v-else class="budget-line" @click="ui.budget = true"><div class="bl"><Ic n="target" :s="13"/>Set a monthly budget</div></button>
       <div class="split">
         <div><small><Ic n="trending-up" :s="13"/>Income</small><b>{{ short(income) }}</b></div>
-        <div><small><Ic n="wallet" :s="13"/>Balance</small><b>{{ income - spent < 0 ? '−' : '' }}{{ short(Math.abs(income - spent)) }}</b></div>
+        <button class="split-btn" @click="ui.accounts = S.accounts.length ? true : 'new'">
+          <small><Ic n="wallet" :s="13"/>{{ S.accounts.length ? 'Balance' : 'Net this month' }}<Ic n="pencil" :s="11" style="margin-left:auto;opacity:.8"/></small>
+          <b v-if="S.accounts.length">{{ totalBalance < 0 ? '−' : '' }}{{ short(Math.abs(totalBalance)) }}</b>
+          <b v-else>{{ income - spent < 0 ? '−' : '' }}{{ short(Math.abs(income - spent)) }}</b>
+          <span v-if="!S.accounts.length" class="set">Set your balance</span>
+        </button>
       </div>
     </div>
     <div class="card" v-if="cats.length">
@@ -1695,6 +1811,7 @@ const MoneyView = {
         </TransitionGroup>
       </div>
     </template>
+    <p v-if="days.length" class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">Tap a transaction to edit it · swipe left to delete</p>
     <Empty v-else e="💸" t="No transactions yet" :s="'Nothing logged for ' + JM[ym.m - 1] + '. Tap + to add one.'"/>
     <button class="fab" @click="ui.tx = {}" aria-label="New transaction"><Ic n="plus" :s="26" :w="2.4"/></button>
   </div>`,
@@ -2840,7 +2957,7 @@ const App = {
         <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :style="{'--acc': t.c}" @click="tab(t.id)">
           <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/></span>{{ t.l }}</button>
       </nav>
-      <TaskSheet/><TxSheet/>
+      <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/>
     </template>
     <Transition name="toast"><div v-if="toast.msg" class="toast" :key="toast.id"><span>{{ toast.msg }}</span><button v-if="toast.undo" @click="doUndo"><Ic n="undo-2" :s="15" style="display:inline;vertical-align:-2px"/> Undo</button></div></Transition>
   </div>`,
@@ -2853,11 +2970,11 @@ Object.assign(app.config.globalProperties, {
   clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
+const live = { totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
-  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('Onboarding', Onboarding);
+  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('Onboarding', Onboarding);
 app.mount('#app');
 
 if (!Native.has) {

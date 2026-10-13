@@ -31,6 +31,12 @@
     ['pasargad', 'Pasargad'], ['ayandeh', 'Ayandeh'], ['parsian', 'Parsian'], ['resalat', 'Resalat'], ['blu', 'Blu'],
   ];
   const toInt = s => parseInt(String(s).replace(/[,.]/g, ''), 10);
+  // Iranian banks send from alphanumeric sender ids (B.Pasargad, BankSaderat, Bank Mellat...). Operators,
+  // shops and wallets (Irancell, SnappFood, Wallex...) send ads and codes that look like money, so the
+  // sender is the first filter.
+  const BANK_SENDER = /bank|^b\.|pasargad|mellat|melli|bmi\b|saderat|tejarat|saman|sepah|ayandeh|parsian|resalat|keshavarzi|maskan|refah|sina|shahr|karafarin|middle ?east|tourism|tose+|blu\b|wepod|bankino|post ?bank|ansar|sarmayeh|hekmat/i;
+  const isBankSender = s => !!s && BANK_SENDER.test(s);
+  const AD = /https?:\/\/|www\.|لغو\s*\d*|تخفیف|کد تخفیف|قرعه/i;
 
   function bankName(text, sender) {
     const hay = (sender || '') + '\n' + text.split('\n').slice(0, 2).join(' ');
@@ -38,7 +44,7 @@
     for (const [k, v] of BANKS) {
       // Persian names must follow "بانک" (or be the whole first line, e.g. "بلو") and not continue into another word
       const ok = /^[a-z]/.test(k)
-        ? new RegExp('\\b' + k + '\\b', 'i').test(hay)
+        ? new RegExp(k, 'i').test(sender || '') || new RegExp('\\b' + k + '\\b', 'i').test(hay)
         : new RegExp('بانک\\s*' + k + '(?![\\u0600-\\u06FF])').test(hay) || new RegExp('^' + k + '(?![\\u0600-\\u06FF])').test(first);
       if (ok) return v;
     }
@@ -88,9 +94,15 @@
     opts = opts || {};
     const text = normalize(raw).trim();
     if (!text || NOT_TX.test(text)) return null;
+    // with a known sender (SMS inbox) only trust banks, or messages that report a balance;
+    // pasted text has no sender, so it is judged on content alone
+    const known = opts.sender !== undefined && opts.sender !== null;
+    const fromBank = known ? isBankSender(opts.sender) : true;
+    if (!fromBank && !BALANCE.test(text)) return null;
+    if (!fromBank && AD.test(text)) return null;
     const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
     const hit = findAmount(lines);
-    if (!hit || !(hit.n > 0)) return null;
+    if (!hit || !(hit.n > 0) || String(hit.n).length > 13) return null;
     // need at least one money signal besides a bare number
     if (!(AMOUNT_KEY.test(text) || BALANCE.test(text) || /ریال|تومان|rial/i.test(text))) return null;
 
@@ -123,5 +135,5 @@
     return (h >>> 0).toString(36);
   }
 
-  g.OrbitSms = { parse, hash, normalize };
+  g.OrbitSms = { parse, hash, normalize, isBankSender };
 })(typeof self !== 'undefined' ? self : globalThis);

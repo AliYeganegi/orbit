@@ -35,19 +35,32 @@ const OUT = process.argv[3];
   await step('sms import', () => p.evaluate(() => {
     const now = Date.now();
     const added = smsImport([
-      { sender: 'Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' },
-      { sender: 'Saman', ts: now - 7200e3, body: 'بانک سامان\nواریز به حساب 849-800-123456-1\nمبلغ: 250,000,000 ریال\nمانده: 312,450,000' },
+      { sender: 'Bank Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' },
+      { sender: 'Bank Saman', ts: now - 7200e3, body: 'بانک سامان\nواریز به حساب 849-800-123456-1\nمبلغ: 250,000,000 ریال\nمانده: 312,450,000' },
       { sender: 'x', ts: now, body: 'رمز پویا: 1234 مبلغ 50,000' },
     ]);
-    smsImport([{ sender: 'Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' }]); // duplicate ignored
+    smsImport([{ sender: 'Bank Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' }]); // duplicate ignored
     if (added.length !== 2 || pendingTx.value.length !== 2) throw new Error('expected 2 drafts, got ' + added.length);
   }));
   await step('money with review list', () => G(`g.nav.screen = null; g.nav.tab = 'money'`));
   await step('categorize draft', () => p.click('.review .rv .chip'));
   assert.equal(await p.evaluate(() => pendingTx.value.length), 1);
   await step('draft details sheet', () => p.click('.review .rv-top'));
-  assert.equal(await p.evaluate(() => document.querySelector('.sheet .btn.primary').disabled), true, 'save disabled until a category is picked');
+  await step('save without category explains why', () => p.click('.sheet .btn.primary'));
+  assert.ok(await p.evaluate(() => /Choose a category/.test(document.querySelector('.sheet').textContent)), 'missing category is explained');
+  await step('pick category + save', async () => { await p.click('.sheet .cat-grid button'); await p.click('.sheet .btn.primary'); });
+  assert.equal(await p.evaluate(() => pendingTx.value.length), 0, 'draft saved');
+  // balance: user sets it, SMS "مانده" overrides it, later manual expenses adjust it
+  await step('accounts sheet', () => p.click('.split-btn'));
+  const bal = await p.evaluate(() => S.accounts.map(a => acctBalance(a)));
+  assert.equal(bal.length, 2, 'accounts created from SMS (Mellat, Saman)');
+  await step('edit balance', async () => { await p.click('.sheet .list-row'); await p.fill('.sheet .amount-in input', '2,000,000'); await p.click('.sheet .btn.primary'); });
+  const b2 = await p.evaluate(() => { const a = S.accounts.find(x => x.balance === 2000000); S.money.unshift({ id: 'mx', type: 'out', amount: 300000, cat: 'food', note: '', date: R.today, created: Date.now() + 1000, acct: a.id }); return acctBalance(a); });
+  assert.equal(b2, 1700000, 'manual expense after setting balance is subtracted');
   await G(`window.orbitBack()`);
+  await step('budget sheet', () => p.click('.budget-line'));
+  await step('set budget', async () => { await p.fill('.sheet .amount-in input', '20000000'); await p.click('.sheet .btn.primary'); });
+  assert.equal(await p.evaluate(() => S.settings.budget), 20000000);
   await step('reports', () => G(`g.nav.screen = 'reports'`));
   await step('reports year', () => p.click('.seg button:nth-child(2)'));
   await step('task sheet (new)', () => G(`g.nav.screen = null; g.nav.tab = 'tasks'; g.ui.task = { preset: { due: g.R.today } }`));
