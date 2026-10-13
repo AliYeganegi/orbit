@@ -11,6 +11,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         String a = i.getAction();
         if (Scheduler.ACT_REMIND.equals(a)) Scheduler.onReminder(c, i.getStringExtra("id"));
         else if (Scheduler.ACT_WATER.equals(a)) Scheduler.onWater(c);
+        else if (Scheduler.ACT_RULE.equals(a)) Scheduler.onRule(c, i.getStringExtra("id"));
         else if (a != null) Scheduler.onAction(c, i);
     }
 }

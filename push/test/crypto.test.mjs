@@ -52,3 +52,33 @@ assert.equal(S.perDay({ ...rule, every: 30 }), 27);
 const b = S.zonedToUtc(2026, 3, 29, 9, 0, 'Europe/Berlin');
 assert.equal(new Date(b).toLocaleString('en-GB', { timeZone: 'Europe/Berlin' }), '29/03/2026, 09:00:00');
 console.log('✓ water schedule: windows, intervals, goal skip, weekdays, DST');
+
+// --- generic reminder rules ---
+{
+  const tz = 'Asia/Tehran', R = globalThis.OrbitSchedule;
+  const at = (y, m, d, h, mi) => R.zonedToUtc(y, m, d, h, mi, tz);
+  const from = at(2026, 10, 12, 14, 20); // Monday, 20 Mehr 1405
+  // once
+  assert.equal(R.nextAt({ kind: 'once', date: '2026-10-13', time: '08:30' }, from, tz), at(2026, 10, 13, 8, 30));
+  assert.equal(R.nextAt({ kind: 'once', date: '2026-10-12', time: '09:00' }, from, tz), null, 'past one-time reminder never fires');
+  // daily, several times, weekdays only (Sat–Wed in Iran: 6,0,1,2,3)
+  const daily = { kind: 'daily', times: ['21:00', '08:00'], days: [6, 0, 1, 2, 3] };
+  assert.deepEqual(R.ruleTimes(daily, from, tz, 3), [at(2026, 10, 12, 21, 0), at(2026, 10, 13, 8, 0), at(2026, 10, 13, 21, 0)]);
+  assert.equal(R.nextAt(daily, at(2026, 10, 14, 22, 0), tz), at(2026, 10, 17, 8, 0), 'skips Thu/Fri to Saturday');
+  // interval with end date
+  const iv = { kind: 'interval', every: 90, start: '09:00', end: '18:00', until: '2026-10-12' };
+  assert.equal(R.nextAt(iv, from, tz), at(2026, 10, 12, 15, 0));
+  assert.equal(R.nextAt(iv, at(2026, 10, 12, 18, 1), tz), null, 'ends after the until date');
+  // monthly gregorian: 31st falls on the last day of shorter months
+  assert.equal(R.nextAt({ kind: 'monthly', dom: 31, cal: 'greg', time: '10:00' }, at(2026, 11, 2, 0, 0), tz), at(2026, 11, 30, 10, 0));
+  // monthly shamsi: 1st of each Jalali month (1 Aban 1405 = Oct 23 2026)
+  assert.equal(R.nextAt({ kind: 'monthly', dom: 1, cal: 'jal', time: '09:00' }, from, tz), at(2026, 10, 23, 9, 0));
+  // 31 Shamsi in Mehr (30 days) → last day of Mehr = 30 Mehr = Oct 22
+  assert.equal(R.nextAt({ kind: 'monthly', dom: 31, cal: 'jal', time: '09:00' }, from, tz), at(2026, 10, 22, 9, 0));
+  // water as an interval rule with goal pause
+  assert.equal(R.nextAt({ kind: 'interval', every: 60, start: '09:00', end: '22:00', stopAtGoal: true, goalDay: '2026-10-12' }, from, tz), at(2026, 10, 13, 9, 0));
+  // paused rule
+  assert.equal(R.nextAt({ ...daily, on: false }, from, tz), null);
+  assert.equal(R.perDay(daily), 2);
+  console.log('✓ reminder rules: once, daily times + weekdays, interval + end date, monthly Gregorian/Shamsi incl. short months, pause');
+}

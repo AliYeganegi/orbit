@@ -10,7 +10,8 @@ import { DurableObject } from 'cloudflare:workers';
 import { sendPush, b64u } from './webpush.js';
 import '../../web/schedule.js';
 
-const { nextWater } = globalThis.OrbitSchedule;
+const { nextWater, nextAt } = globalThis.OrbitSchedule;
+const MAX_RULES = 60;
 
 const MAX_REMINDERS = 400;
 const MAX_BODY = 200_000;
@@ -50,6 +51,30 @@ function cleanWater(w) {
   return { on: true, every, start: w.start, end: w.end, days, stopAtGoal: !!w.stopAtGoal, goalDay };
 }
 
+const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+/** Repeating personal reminders (and water). Texts arrive sealed (`c`); only the schedule is readable. */
+function cleanRules(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set(), out = [];
+  for (const r of list) {
+    if (!r || typeof r.id !== 'string' || r.id.length > 80 || seen.has(r.id) || typeof r.c !== 'string' || r.c.length > 4000) continue;
+    if (!['once', 'daily', 'interval', 'monthly'].includes(r.kind)) continue;
+    const days = Array.isArray(r.days) ? [...new Set(r.days.filter(d => Number.isInteger(d) && d >= 0 && d <= 6))] : null;
+    const x = { id: r.id, kind: r.kind, c: r.c, water: !!r.water, until: isDate(r.until) ? r.until : '', days };
+    if (r.kind === 'once') { if (!isDate(r.date) || !isHHMM(r.time)) continue; Object.assign(x, { date: r.date, time: r.time }); }
+    if (r.kind === 'daily') { const times = (r.times || []).filter(isHHMM).slice(0, 24); if (!times.length) continue; x.times = times; }
+    if (r.kind === 'interval') {
+      const every = Math.round(Number(r.every));
+      if (!(every >= 15 && every <= 720) || !isHHMM(r.start) || !isHHMM(r.end) || r.end < r.start) continue;
+      Object.assign(x, { every, start: r.start, end: r.end, stopAtGoal: !!r.stopAtGoal, goalDay: isDate(r.goalDay) ? r.goalDay : null });
+    }
+    if (r.kind === 'monthly') { const dom = Math.round(Number(r.dom)); if (!(dom >= 1 && dom <= 31) || !isHHMM(r.time)) continue; Object.assign(x, { dom, time: r.time, cal: r.cal === 'jal' ? 'jal' : 'greg' }); }
+    seen.add(r.id); out.push(x);
+    if (out.length >= MAX_RULES) break;
+  }
+  return out;
+}
+
 function cleanReminders(list, now) {
   if (!Array.isArray(list)) return [];
   const seen = new Set();
@@ -82,11 +107,12 @@ export class Device extends DurableObject {
     const tz = validTz(body.tz) ? body.tz : 'UTC';
     const reminders = cleanReminders(body.reminders, now);
     const water = cleanWater(body.water);
-    const patch = { reminders, water, tz, synced: now };
+    const rules = cleanRules(body.rules);
+    const patch = { reminders, water, rules, tz, synced: now };
     if (body.subscription && validSubscription(body.subscription, this.env)) patch.sub = body.subscription;
     await this.ctx.storage.put(patch);
     const next = await this.reschedule();
-    return { status: 200, data: { ok: true, reminders: reminders.length, water: !!water, next } };
+    return { status: 200, data: { ok: true, reminders: reminders.length, water: !!water, rules: rules.length, next } };
   }
 
   async test(token) {
@@ -104,10 +130,14 @@ export class Device extends DurableObject {
 
   /** Sets the storage alarm to the earliest pending item and returns that time. */
   async reschedule() {
-    const { reminders = [], water, tz = 'UTC' } = await this.ctx.storage.get(['reminders', 'water', 'tz']).then(m => Object.fromEntries(m));
-    const nw = water ? nextWater(water, Date.now(), tz) : null;
-    await this.ctx.storage.put('nextWater', nw);
-    const next = Math.min(reminders.length ? reminders[0].at : Infinity, nw || Infinity);
+    const { reminders = [], water, rules = [], tz = 'UTC', sent = {} } = await this.ctx.storage.get(['reminders', 'water', 'rules', 'tz', 'sent']).then(m => Object.fromEntries(m));
+    const now = Date.now();
+    // never compute from before the last delivery, so an early alarm can't send the same slot twice
+    const nw = water ? nextWater(water, Math.max(now, sent.water || 0), tz) : null;
+    const nextRules = {};
+    for (const r of rules) { const at = nextAt(r, Math.max(now, sent['rule:' + r.id] || 0), tz); if (at) nextRules[r.id] = at; }
+    await this.ctx.storage.put({ nextWater: nw, nextRules });
+    const next = Math.min(reminders.length ? reminders[0].at : Infinity, nw || Infinity, ...Object.values(nextRules));
     if (next === Infinity) await this.ctx.storage.deleteAlarm();
     else await this.ctx.storage.setAlarm(next);
     return next === Infinity ? null : next;
@@ -126,7 +156,8 @@ export class Device extends DurableObject {
 
   async alarm() {
     const now = Date.now();
-    const s = Object.fromEntries(await this.ctx.storage.get(['reminders', 'water', 'tz', 'nextWater']));
+    const s = Object.fromEntries(await this.ctx.storage.get(['reminders', 'water', 'tz', 'nextWater', 'rules', 'nextRules', 'sent']));
+    const sent = s.sent || {};
     const reminders = s.reminders || [];
     const due = reminders.filter(r => r.at <= now + EARLY);
     const later = reminders.filter(r => r.at > now + EARLY);
@@ -141,7 +172,18 @@ export class Device extends DurableObject {
       // short TTL: a water nudge delivered an hour late is just noise
       const res = await this.deliver({ id: 'water', k: 'water', at: s.nextWater }, { ttl: 20 * 60, urgency: 'normal', topic: 'water' });
       if (res.gone) return;
+      sent.water = s.nextWater;
     }
+    for (const r of s.rules || []) {
+      const due = (s.nextRules || {})[r.id];
+      if (!due || due > now + EARLY) continue;
+      sent['rule:' + r.id] = due;
+      if (now - due > (r.water ? 20 * 60e3 : STALE)) continue;
+      const res = await this.deliver({ id: 'rule:' + r.id, k: r.water ? 'water' : 'rule', c: r.c, at: due },
+        { ttl: r.water ? 20 * 60 : 6 * 3600, urgency: r.water ? 'normal' : 'high', topic: ('r' + r.id).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) });
+      if (res.gone) return;
+    }
+    await this.ctx.storage.put('sent', sent);
     await this.reschedule();
   }
 }

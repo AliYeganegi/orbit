@@ -748,3 +748,26 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 .tip-card h3 .ic { color: var(--pc); }
 .tip-card p { font-size: 15.5px; line-height: 1.55; font-weight: 550; color: var(--text); }
 .tip-card .link-btn { color: var(--pc); font-size: 13.5px; }
+
+/* ---------- reminders ---------- */
+.tpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tpl { text-align: left; padding: 14px; border-radius: 18px; background: color-mix(in srgb, var(--c) 10%, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--c) 22%, transparent); display: flex; flex-direction: column; gap: 3px; }
+.tpl .e { font-size: 26px; margin-bottom: 4px; }
+.tpl b { font-size: 14.5px; }
+.tpl small { font-size: 11.5px; color: var(--muted); font-weight: 550; line-height: 1.35; }
+.rem-head { display: flex; align-items: center; gap: 12px; }
+.rem-emoji { width: 54px; height: 54px; border-radius: 18px; font-size: 28px; display: grid; place-items: center; flex-shrink: 0; background: color-mix(in srgb, var(--c) 18%, var(--surface-2)); border: 1.5px dashed color-mix(in srgb, var(--c) 50%, transparent); }
+.field-title.bad::placeholder { color: var(--c-mood); }
+.preview { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 12px 14px; border-radius: 16px; background: color-mix(in srgb, var(--c-habits) 12%, transparent); color: var(--text-2); font-size: 13.5px; line-height: 1.45; }
+.preview .ic { color: var(--c-habits); margin-top: 1px; }
+.preview.bad { background: color-mix(in srgb, var(--c-mood) 14%, transparent); }
+.preview.bad .ic { color: var(--c-mood); }
+.hint-card { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; margin-bottom: 12px; font-size: 13.5px; font-weight: 600; color: color-mix(in srgb, var(--c-mood) 70%, var(--text)); border-color: color-mix(in srgb, var(--c-mood) 35%, var(--line)); }
+.rem { display: flex; align-items: center; gap: 13px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; transition: opacity .2s; }
+.rem .e { width: 46px; height: 46px; border-radius: 15px; display: grid; place-items: center; font-size: 23px; background: color-mix(in srgb, var(--c) 16%, transparent); flex-shrink: 0; }
+.rem .t { font-weight: 680; font-size: 15.5px; }
+.rem .s { font-size: 12.5px; color: var(--muted); margin-top: 2px; font-weight: 550; }
+.rem .n { font-size: 12px; font-weight: 700; margin-top: 4px; color: var(--muted); }
+.rem .n.on { color: var(--c); }
+.rem.off { opacity: .55; }
+.rem .toggle.on { background: var(--c); }

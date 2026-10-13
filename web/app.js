@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.7'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.8'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -68,6 +68,7 @@ function words(n) {
 const mmss = s => pad(Math.floor(s / 60)) + ':' + pad(s % 60);
 const hm = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const isToday = ms => keyOf(new Date(ms)) === R.today;
+const whenShort = ms => { if (!ms) return ''; const r = isToday(ms) ? 'today' : rel(keyOf(new Date(ms))); return (r === 'Tomorrow' ? 'tomorrow' : r) + ' ' + hm(ms); };
 const everyLabel = m => (m < 60 ? m + ' min' : +(m / 60).toFixed(1) + ' h');
 
 /* ================= constants ================= */
@@ -186,7 +187,7 @@ const defaults = () => ({
     sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
   },
-  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [], accounts: [],
+  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [], accounts: [], reminders: [],
   water: {}, mood: {}, focusLog: {},
   timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
@@ -225,9 +226,18 @@ if (S.settings.sms.on && !S.settings.sms.since) {
   S.settings.sms.since = Date.now(); S.settings.sms.last = Date.now();
 }
 
+// one-off (1.8): the water schedule becomes a regular, editable reminder
+if (!S.settings.remMigrated) {
+  const w = S.settings.waterRemind || {};
+  if (!S.reminders.some(r => r.water)) S.reminders.unshift({ id: 'water', on: !!w.on, water: true, title: 'Drink water', emoji: '💧', color: '#3ba4ff', note: '',
+    kind: 'interval', every: w.every || 60, start: w.start || '09:00', end: w.end || '22:00', days: w.days || [0, 1, 2, 3, 4, 5, 6], stopAtGoal: w.stopAtGoal !== false,
+    until: '', created: Date.now() });
+  S.settings.remMigrated = true;
+}
+
 const R = reactive({ now: Date.now(), today: keyOf(new Date()), sysDark: Native.sysDark() });
 const nav = reactive({ tab: 'today', screen: null });
-const ui = reactive({ task: null, tx: null, accounts: null, budget: false });
+const ui = reactive({ task: null, tx: null, accounts: null, budget: false, rem: null });
 const toast = reactive({ msg: '', undo: null, id: 0 });
 let toastT;
 function say(msg, undo) {
@@ -926,11 +936,67 @@ const plan = computed(() => {
   }
   return out.filter(r => r.at >= now).sort((a, b) => a.at - b.at);
 });
-const waterRule = computed(() => {
-  const w = S.settings.waterRemind, goal = S.settings.waterGoal, count = waterToday.value;
-  return { ...w, goal, glassMl: S.settings.glassMl, count, day: R.today, goalDay: count >= goal ? R.today : null };
-});
-const waterNext = computed(() => { R.now; return OrbitSchedule.waterTimes(waterRule.value, Date.now(), TZ, 3); });
+/* ---------- personal reminders (water is one of them) ---------- */
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+const DAY_DOTS = [{ l: 'Sa', v: 6 }, { l: 'Su', v: 0 }, { l: 'Mo', v: 1 }, { l: 'Tu', v: 2 }, { l: 'We', v: 3 }, { l: 'Th', v: 4 }, { l: 'Fr', v: 5 }];
+const DAY_PRESETS = [{ l: 'Every day', v: ALL_DAYS }, { l: 'Sat–Wed', v: [6, 0, 1, 2, 3] }, { l: 'Thu & Fri', v: [4, 5] }];
+const REM_EMOJI = ['💧', '💊', '🧍', '👀', '😴', '🧘', '📞', '🏠', '💳', '🏋️', '🌱', '🍎', '📚', '🙏', '🐶', '🚗', '🎂', '🧹', '💼', '⏰', '☕', '🦷', '🌙', '❤️'];
+const REM_TEMPLATES = [
+  { title: 'Drink water', emoji: '💧', color: '#3ba4ff', water: true, kind: 'interval', every: 60, start: '09:00', end: '22:00', stopAtGoal: true, note: '' },
+  { title: 'Take medicine', emoji: '💊', color: '#22c55e', kind: 'daily', times: ['09:00', '21:00'], note: 'With a glass of water' },
+  { title: 'Stand up & stretch', emoji: '🧍', color: '#f97316', kind: 'interval', every: 60, start: '10:00', end: '18:00', days: [6, 0, 1, 2, 3], note: 'Two minutes away from the screen' },
+  { title: 'Eye break', emoji: '👀', color: '#14b8a6', kind: 'interval', every: 30, start: '10:00', end: '18:00', days: [6, 0, 1, 2, 3], note: 'Look 6 metres away for 20 seconds' },
+  { title: 'Bedtime', emoji: '😴', color: '#7c6cff', kind: 'daily', times: ['23:30'], note: 'Screens off, wind down' },
+  { title: 'Meditate', emoji: '🧘', color: '#a78bfa', kind: 'daily', times: ['07:30'], note: 'Five calm minutes' },
+  { title: 'Call mom', emoji: '📞', color: '#ff5c9a', kind: 'daily', times: ['18:00'], days: [5], note: '' },
+  { title: 'Pay rent', emoji: '🏠', color: '#f5a524', kind: 'monthly', dom: 1, cal: 'jal', time: '10:00', note: '' },
+  { title: 'Pay bills', emoji: '💳', color: '#ef4444', kind: 'monthly', dom: 25, cal: 'jal', time: '10:00', note: 'Electricity, internet, phone' },
+  { title: 'Workout', emoji: '🏋️', color: '#ff6b5b', kind: 'daily', times: ['18:00'], days: [6, 1, 3], note: '' },
+  { title: 'Water the plants', emoji: '🌱', color: '#22c55e', kind: 'daily', times: ['09:00'], days: [6, 2], note: '' },
+  { title: 'Custom reminder', emoji: '⏰', color: '#64748b', kind: 'once', note: '', custom: true },
+];
+function newReminder(tpl) {
+  const t = JSON.parse(JSON.stringify(tpl || REM_TEMPLATES[REM_TEMPLATES.length - 1]));
+  delete t.custom;
+  const soon = new Date(Date.now() + 3600e3);
+  return {
+    id: tpl && tpl.water ? 'water' : uid(), on: true, water: false, title: '', emoji: '⏰', color: '#64748b', note: '',
+    kind: 'once', date: keyOf(soon), time: pad(soon.getHours()) + ':00', times: ['09:00'], every: 60, start: '09:00', end: '22:00',
+    days: [...ALL_DAYS], dom: 1, cal: 'jal', until: '', stopAtGoal: true, created: Date.now(), ...t, title: tpl && !tpl.custom ? t.title : '',
+  };
+}
+function daysLabel(days) {
+  const d = [...(days || ALL_DAYS)].sort();
+  if (d.length === 7) return 'Every day';
+  const same = a => a.length === d.length && [...a].sort().every((x, i) => x === d[i]);
+  if (same([6, 0, 1, 2, 3])) return 'Sat–Wed';
+  if (same([4, 5])) return 'Thu & Fri';
+  return DAY_DOTS.filter(x => d.includes(x.v)).map(x => WD[x.v]).join(', ');
+}
+function remSummary(r) {
+  if (r.kind === 'once') return r.date ? 'Once · ' + rel(r.date) + ' at ' + r.time : 'Once';
+  if (r.kind === 'daily') return daysLabel(r.days) + ' at ' + (r.times || []).slice().sort().join(', ');
+  if (r.kind === 'interval') return 'Every ' + everyLabel(r.every) + ' · ' + r.start + '–' + r.end + (daysLabel(r.days) === 'Every day' ? '' : ' · ' + daysLabel(r.days));
+  if (r.kind === 'monthly') return 'Monthly on day ' + r.dom + (r.cal === 'jal' ? ' (Shamsi)' : '') + ' at ' + r.time;
+  return '';
+}
+/** The rule a deliverer needs: schedule fields + display text (+ live water progress). */
+function remRule(r) {
+  const base = { id: r.id, on: r.on !== false, kind: r.kind, until: r.until || '', water: !!r.water, title: (r.emoji ? r.emoji + ' ' : '') + (r.title || 'Reminder'), body: r.note || remSummary(r) };
+  if (r.kind === 'once') Object.assign(base, { date: r.date, time: r.time });
+  if (r.kind === 'daily') Object.assign(base, { times: r.times, days: r.days });
+  if (r.kind === 'interval') Object.assign(base, { every: r.every, start: r.start, end: r.end, days: r.days, stopAtGoal: !!r.stopAtGoal });
+  if (r.kind === 'monthly') Object.assign(base, { dom: r.dom, cal: r.cal, time: r.time });
+  if (r.water) {
+    const goal = S.settings.waterGoal, count = waterToday.value;
+    Object.assign(base, { title: '💧 Time for some water', goal, count, day: R.today, glassMl: S.settings.glassMl, goalDay: count >= goal ? R.today : null });
+  }
+  return base;
+}
+const remRules = computed(() => S.reminders.filter(r => r.on !== false).map(remRule));
+const remNext = r => OrbitSchedule.ruleTimes(remRule(r), Date.now(), TZ, 3);
+const waterRem = computed(() => S.reminders.find(r => r.water));
+const waterNext = computed(() => { R.now; return waterRem.value && waterRem.value.on !== false ? remNext(waterRem.value) : []; });
 
 /* small IndexedDB key-value store, shared with the service worker */
 const idb = {
@@ -976,7 +1042,7 @@ function refreshAndroidStatus() {
   try { Rem.androidOn = !!JSON.parse(AN.notifStatus()).enabled; } catch (e) {}
 }
 function payload() {
-  return { v: 1, tz: TZ, reminders: plan.value, water: waterRule.value };
+  return { v: 2, tz: TZ, reminders: plan.value, rules: remRules.value, water: null };
 }
 let syncTimer, retryIn = 30e3;
 function scheduleSync(ms = 600) { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, ms); }
@@ -992,13 +1058,17 @@ async function syncNow() {
     await idb.set('water', { day: R.today, count: waterToday.value, goal: S.settings.waterGoal });
     const key = await sealKey();
     const reminders = await Promise.all(p.reminders.map(async r => ({ id: r.id, at: r.at, ch: r.ch, c: await seal(key, { title: r.title, body: r.body, go: r.go }) })));
-    const w = p.water;
-    const water = w.on ? { on: true, every: w.every, start: w.start, end: w.end, days: w.days, stopAtGoal: w.stopAtGoal, goalDay: w.goalDay } : null;
+    // schedules go in the clear, texts are sealed like one-shot reminders
+    const rules = await Promise.all(p.rules.map(async r => {
+      const { title, body, goal, count, day, glassMl, ...sched } = r;
+      return { ...sched, c: await seal(key, { title, body, go: r.water ? 'water' : 'reminders' }) };
+    }));
+    const water = null;
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
     const res = await fetch(PUSH_URL + '/sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + Rem.push.token },
-      body: JSON.stringify({ tz: TZ, reminders, water, subscription: sub ? sub.toJSON() : undefined }),
+      body: JSON.stringify({ tz: TZ, reminders, rules, water, subscription: sub ? sub.toJSON() : undefined }),
     });
     if (res.status === 401) { Rem.push = {}; savePush(); Rem.state = 'idle'; return; } // server forgot us (e.g. subscription expired)
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1906,6 +1976,7 @@ const MoreView = {
     const apps = computed(() => {
       const m = S.mood[R.today], nx = cdSorted.value.find(x => x.days >= 0), c = cyc.value;
       return [
+        { id: 'reminders', n: 'bell', l: 'Reminders', c: 'var(--c-mood)', s: (() => { const n = S.reminders.filter(r => r.on !== false).length; return n ? n + ' active' : 'Set your own nudges'; })() },
         { id: 'notes', n: 'notebook-pen', l: 'Notes', c: 'var(--c-notes)', s: S.notes.length + ' note' + (S.notes.length === 1 ? '' : 's') },
         { id: 'focus', n: 'timer', l: 'Focus', c: 'var(--c-focus)', s: S.timer.running ? mmss(Timer.left()) + ' left' : focusToday.value.min + ' min today' },
         { id: 'water', n: 'droplet', l: 'Water', c: 'var(--c-water)', s: waterToday.value + ' / ' + S.settings.waterGoal + ' glasses' },
@@ -2149,10 +2220,10 @@ const WaterView = {
       <div class="week-bars"><div v-for="w in week" :key="w.k" :class="{today: w.k === R.today}"><span class="v">{{ w.v || '' }}</span><i :style="{height: (w.v / max * 70) + '%', background: w.v >= goal ? 'var(--c-water)' : ''}"></i><small>{{ w.l }}</small></div></div>
     </div>
     <div class="label">Reminders</div>
-    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="go('alerts')">
+    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="ui.rem = waterRem ? {ref: waterRem} : {tpl: REM_TEMPLATES[0]}">
       <span class="bubble" style="--c:var(--c-water)"><Ic n="bell" :s="18"/></span>
-      <div class="grow"><div class="t">{{ S.settings.waterRemind.on ? 'Every ' + everyLabel(S.settings.waterRemind.every) + ', ' + S.settings.waterRemind.start + '–' + S.settings.waterRemind.end : 'Water reminders are off' }}</div>
-        <div class="s">{{ S.settings.waterRemind.on ? (waterNext.length ? 'Next at ' + hm(waterNext[0]) + (isToday(waterNext[0]) ? '' : ' ' + rel(keyOf(new Date(waterNext[0]))).toLowerCase()) : 'No upcoming reminders') : 'Get a nudge to drink through the day' }}</div></div>
+      <div class="grow"><div class="t">{{ waterRem && waterRem.on !== false ? remSummary(waterRem) : 'Water reminders are off' }}</div>
+        <div class="s">{{ waterRem && waterRem.on !== false ? (waterNext.length ? 'Next at ' + hm(waterNext[0]) + (isToday(waterNext[0]) ? '' : ' ' + rel(keyOf(new Date(waterNext[0]))).toLowerCase()) : 'No upcoming reminders') : 'Get a nudge to drink through the day' }}</div></div>
       <Ic n="chevron-right" :s="18" class="muted"/></button></div>
     <div class="label">Daily goal</div>
     <div class="settings-group">
@@ -2593,20 +2664,13 @@ const CycleView = {
 
 const NotificationsView = {
   setup() {
-    const w = S.settings.waterRemind;
-    const EVERY = [30, 60, 90, 120, 180];
-    const DAYS = [{ l: 'Sa', v: 6 }, { l: 'Su', v: 0 }, { l: 'Mo', v: 1 }, { l: 'Tu', v: 2 }, { l: 'We', v: 3 }, { l: 'Th', v: 4 }, { l: 'Fr', v: 5 }];
-    const toggleDay = v => { const i = w.days.indexOf(v); i >= 0 ? w.days.splice(i, 1) : w.days.push(v); Native.vibrate(6); };
-    const badWindow = computed(() => w.end <= w.start);
-    const perDay = computed(() => OrbitSchedule.perDay(w));
-    const goalHit = computed(() => w.stopAtGoal && waterToday.value >= S.settings.waterGoal);
-    const ICON = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'] };
+    const ICON = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'], reminders: ['bell', 'var(--c-mood)'] };
     const upcoming = computed(() => {
-      const water = w.on ? waterNext.value.map(at => ({ id: 'w' + at, at, ch: 'water', title: 'Drink water', body: '' })) : [];
-      return [...plan.value, ...water].sort((a, b) => a.at - b.at).slice(0, 6);
+      R.now;
+      const rem = S.reminders.filter(r => r.on !== false).flatMap(r => remNext(r).map(at => ({ id: r.id + at, at, ch: r.water ? 'water' : 'reminders', title: r.emoji + ' ' + r.title })));
+      return [...plan.value, ...rem].sort((a, b) => a.at - b.at).slice(0, 6);
     });
     const whenLabel = ms => (isToday(ms) ? 'Today' : rel(keyOf(new Date(ms)))) + ' · ' + hm(ms);
-    function toggleWater(v) { w.on = v; if (v && Native.has) Native.askNotify(); }
     const status = computed(() => {
       if (Native.has) return Rem.androidOn ? 'on' : 'blocked';
       if (!PUSH_SUPPORTED) return IOS && !STANDALONE ? 'install' : 'unsupported';
@@ -2614,7 +2678,7 @@ const NotificationsView = {
       if (!Rem.push.token) return 'off';
       return Rem.state === 'error' ? 'error' : 'on';
     });
-    return { w, EVERY, DAYS, toggleDay, badWindow, perDay, goalHit, upcoming, whenLabel, toggleWater, status, ICON, everyLabel, hm };
+    return { upcoming, whenLabel, status, ICON, everyLabel, hm };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <Head title="Notifications" :sub="Native.has ? 'Delivered by this phone, even offline' : 'Delivered by Orbit\\'s push server'"/>
@@ -2656,31 +2720,12 @@ const NotificationsView = {
       </template>
     </div>
 
-    <div class="label">Water</div>
-    <div class="settings-group" style="--acc:var(--c-water)">
-      <div class="list-row"><span class="bubble" style="--c:var(--c-water)"><Ic n="droplet" :s="18"/></span>
-        <div class="grow"><div class="t">Water reminders</div><div class="s">{{ w.on ? perDay + ' a day' + (goalHit ? ' · paused today, goal reached 🎉' : '') : 'Nudges to drink through the day' }}</div></div>
-        <Toggle :model-value="w.on" @update:model-value="toggleWater"/></div>
-      <template v-if="w.on">
-        <div class="list-row" style="display:block">
-          <div class="t" style="margin-bottom:10px">Remind me every</div>
-          <div class="chips"><button v-for="m in EVERY" :key="m" class="chip" :class="{on: w.every === m}" @click="w.every = m">{{ everyLabel(m) }}</button></div>
-        </div>
-        <div class="list-row" style="display:block">
-          <div class="t" style="margin-bottom:10px">Between</div>
-          <div class="row" style="gap:10px">
-            <label class="chip on time-chip"><Ic n="sun" :s="15"/>{{ w.start }}<input type="time" v-model="w.start"></label>
-            <span class="muted">to</span>
-            <label class="chip on time-chip"><Ic n="moon" :s="15"/>{{ w.end }}<input type="time" v-model="w.end"></label>
-          </div>
-          <div v-if="badWindow" class="hint warn" style="margin-top:10px"><span class="grow">The end time needs to be after the start time</span></div>
-        </div>
-        <div class="list-row" style="display:block">
-          <div class="t" style="margin-bottom:10px">On these days</div>
-          <div class="day-dots"><button v-for="d in DAYS" :key="d.v" :class="{on: w.days.includes(d.v)}" @click="toggleDay(d.v)">{{ d.l }}</button></div>
-        </div>
-        <div class="list-row"><div class="grow"><div class="t">Pause after daily goal</div><div class="s">Stop for the day once you've had {{ S.settings.waterGoal }} glasses</div></div><Toggle v-model="w.stopAtGoal"/></div>
-      </template>
+    <div class="label">Personal reminders</div>
+    <div class="settings-group">
+      <button class="list-row" style="width:100%;text-align:left" @click="go('reminders')">
+        <span class="bubble" style="--c:var(--c-mood)"><Ic n="bell" :s="18"/></span>
+        <div class="grow"><div class="t">Reminders</div><div class="s">{{ S.reminders.length ? S.reminders.filter(r => r.on !== false).length + ' active · water, medicine, anything you set' : 'Water, medicine, stretching, bills…' }}</div></div>
+        <Ic n="chevron-right" :s="18" class="muted"/></button>
     </div>
 
     <div class="label">Other reminders</div>
@@ -2934,6 +2979,179 @@ const ReportsView = {
   </div>`,
 };
 
+const RemSheet = {
+  setup() {
+    const d = reactive(newReminder());
+    const picking = ref(false), emojiOpen = ref(false), need = ref('');
+    const isEdit = computed(() => ui.rem && ui.rem.ref);
+    watch(() => ui.rem, v => {
+      if (!v) return;
+      need.value = ''; emojiOpen.value = false;
+      if (v.ref) { Object.assign(d, newReminder(), JSON.parse(JSON.stringify(v.ref))); picking.value = false; }
+      else if (v.tpl) { Object.assign(d, newReminder(v.tpl)); picking.value = false; }
+      else picking.value = true;
+    });
+    const templates = computed(() => REM_TEMPLATES.filter(t => !(t.water && S.reminders.some(r => r.water))));
+    function useTpl(t) { Object.assign(d, newReminder(t)); picking.value = false; Native.vibrate(6); }
+    const EVERY = [15, 20, 30, 45, 60, 90, 120, 180, 240];
+    const KINDS = [{ id: 'once', l: 'Once' }, { id: 'daily', l: 'Daily' }, { id: 'interval', l: 'Every…' }, { id: 'monthly', l: 'Monthly' }];
+    const toggleDay = v => { const i = d.days.indexOf(v); i >= 0 ? d.days.splice(i, 1) : d.days.push(v); Native.vibrate(6); };
+    const sameDays = a => a.length === d.days.length && a.every(x => d.days.includes(x));
+    function addTime() { const last = d.times[d.times.length - 1] || '08:00'; const [h, m] = last.split(':').map(Number); d.times.push(pad((h + 3) % 24) + ':' + pad(m)); }
+    const preview = computed(() => OrbitSchedule.ruleTimes(remRule(d), Date.now(), TZ, 3));
+    const problem = computed(() => {
+      if (d.kind === 'interval' && d.end <= d.start) return 'The end time needs to be after the start time';
+      if ((d.kind === 'daily' || d.kind === 'interval') && !d.days.length) return 'Pick at least one day';
+      if (d.kind === 'daily' && !d.times.length) return 'Add at least one time';
+      if (!preview.value.length) return d.kind === 'once' ? 'That time has already passed' : 'This schedule never fires. Check the dates and times';
+      return '';
+    });
+    function save() {
+      if (!d.title.trim()) { need.value = 'title'; Native.vibrate(30); return; }
+      if (problem.value) { need.value = 'schedule'; Native.vibrate(30); return; }
+      const rec = JSON.parse(JSON.stringify(d));
+      rec.title = rec.title.trim(); rec.on = true;
+      if (rec.kind === 'daily') rec.times = [...new Set(rec.times)].sort();
+      if (isEdit.value) Object.assign(ui.rem.ref, rec); else S.reminders.push(rec);
+      if (Native.has) Native.askNotify();
+      say((isEdit.value ? 'Saved' : 'Reminder added') + ' · next ' + whenShort(preview.value[0]));
+      ui.rem = null;
+    }
+    function remove() {
+      const r = ui.rem.ref, i = S.reminders.indexOf(r);
+      S.reminders.splice(i, 1); ui.rem = null;
+      say('"' + r.title + '" deleted', () => S.reminders.splice(i, 0, r));
+    }
+    watch(() => d.title, () => { if (need.value === 'title') need.value = ''; });
+    return { d, picking, emojiOpen, need, isEdit, templates, useTpl, EVERY, KINDS, toggleDay, sameDays, addTime, preview, problem, save, remove, DAY_DOTS, DAY_PRESETS, REM_EMOJI, HABIT_COLORS, everyLabel, whenShort };
+  },
+  template: `<Sheet :open="!!ui.rem" :title="picking ? 'New reminder' : isEdit ? 'Edit reminder' : 'New reminder'" full @close="ui.rem = null">
+    <div style="--acc:var(--c-mood)">
+      <template v-if="picking">
+        <p class="muted" style="font-size:13.5px;margin:-2px 2px 14px">Start from an idea, or make your own.</p>
+        <div class="tpl-grid">
+          <button v-for="t in templates" :key="t.title" class="tpl tap" :style="{'--c': t.color}" @click="useTpl(t)">
+            <span class="e">{{ t.emoji }}</span><b>{{ t.title }}</b><small>{{ t.custom ? 'Any time, any repeat' : remSummary(newReminder(t)) }}</small></button>
+        </div>
+      </template>
+      <template v-else>
+        <div class="rem-head">
+          <button class="rem-emoji" :style="{'--c': d.color}" @click="emojiOpen = !emojiOpen" aria-label="Choose icon">{{ d.emoji }}</button>
+          <input class="field-title" v-model="d.title" placeholder="Reminder name" enterkeyhint="done" :class="{bad: need === 'title'}">
+        </div>
+        <div v-if="need === 'title'" class="hint warn" style="margin-top:8px"><span class="grow">Give the reminder a name</span></div>
+        <Transition name="fade"><div v-if="emojiOpen" style="margin-top:12px">
+          <div class="emoji-grid"><button v-for="e in REM_EMOJI" :key="e" :class="{on: d.emoji === e}" @click="d.emoji = e; emojiOpen = false">{{ e }}</button></div>
+          <div class="swatches" style="margin-top:12px"><button v-for="c in HABIT_COLORS" :key="c" :style="{'--c': c}" :class="{on: d.color === c}" @click="d.color = c"></button></div>
+        </div></Transition>
+        <textarea class="field" v-model="d.note" :placeholder="d.water ? 'Details (optional). The notification shows your progress.' : 'Details shown in the notification (optional)'" style="min-height:64px;margin-top:12px"></textarea>
+
+        <span class="flabel">Repeat</span>
+        <div class="seg"><button v-for="k in KINDS" :key="k.id" :class="{on: d.kind === k.id}" @click="d.kind = k.id; Native.vibrate(6)">{{ k.l }}</button></div>
+
+        <template v-if="d.kind === 'once'">
+          <span class="flabel">Date & time</span>
+          <DatePick v-model="d.date" :none="false"/>
+          <div class="row" style="margin-top:10px"><label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ d.time }}<input type="time" v-model="d.time"></label></div>
+        </template>
+
+        <template v-if="d.kind === 'daily'">
+          <span class="flabel">At</span>
+          <div class="chips">
+            <span v-for="(t, i) in d.times" :key="i" class="chip on time-chip">
+              <label style="display:flex;align-items:center;gap:6px;position:relative"><Ic n="clock" :s="15"/>{{ t }}<input type="time" :value="t" @change="d.times[i] = $event.target.value" class="overlay-input"></label>
+              <button v-if="d.times.length > 1" @click="d.times.splice(i, 1)" aria-label="Remove time" style="margin-left:2px;display:grid"><Ic n="x" :s="13"/></button>
+            </span>
+            <button class="chip" @click="addTime"><Ic n="plus" :s="14"/>Add time</button>
+          </div>
+        </template>
+
+        <template v-if="d.kind === 'interval'">
+          <span class="flabel">Every</span>
+          <div class="chips"><button v-for="m in EVERY" :key="m" class="chip" :class="{on: d.every === m}" @click="d.every = m">{{ everyLabel(m) }}</button></div>
+          <span class="flabel">Between</span>
+          <div class="row" style="gap:10px">
+            <label class="chip on time-chip"><Ic n="sun" :s="15"/>{{ d.start }}<input type="time" v-model="d.start"></label>
+            <span class="muted">to</span>
+            <label class="chip on time-chip"><Ic n="moon" :s="15"/>{{ d.end }}<input type="time" v-model="d.end"></label>
+          </div>
+          <div v-if="d.water" class="list-row" style="border:0;padding:14px 2px 0"><div class="grow"><div class="t">Pause after daily goal</div><div class="s">Stop for the day once you've had {{ S.settings.waterGoal }} glasses</div></div><Toggle v-model="d.stopAtGoal"/></div>
+        </template>
+
+        <template v-if="d.kind === 'daily' || d.kind === 'interval'">
+          <span class="flabel">On</span>
+          <div class="chips" style="margin-bottom:10px"><button v-for="p in DAY_PRESETS" :key="p.l" class="chip" :class="{on: sameDays(p.v)}" @click="d.days = [...p.v]">{{ p.l }}</button></div>
+          <div class="day-dots"><button v-for="x in DAY_DOTS" :key="x.v" :class="{on: d.days.includes(x.v)}" @click="toggleDay(x.v)">{{ x.l }}</button></div>
+        </template>
+
+        <template v-if="d.kind === 'monthly'">
+          <span class="flabel">Calendar</span>
+          <div class="seg"><button :class="{on: d.cal === 'jal'}" @click="d.cal = 'jal'">Shamsi</button><button :class="{on: d.cal === 'greg'}" @click="d.cal = 'greg'">Gregorian</button></div>
+          <div class="settings-group" style="box-shadow:none;margin-top:12px">
+            <div class="list-row"><div class="grow"><div class="t">Day of the month</div><div class="s" v-if="d.dom > 28">Falls on the last day in shorter months</div></div><Stepper v-model="d.dom" :min="1" :max="31"/></div>
+            <div class="list-row"><div class="grow"><div class="t">Time</div></div><label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ d.time }}<input type="time" v-model="d.time"></label></div>
+          </div>
+        </template>
+
+        <template v-if="d.kind !== 'once'">
+          <div class="list-row" style="border:0;padding:16px 2px 4px"><div class="grow"><div class="t">End date</div><div class="s">{{ d.until ? 'Last reminder on ' + gFull(d.until) : 'Keeps going until you turn it off' }}</div></div>
+            <Toggle :model-value="!!d.until" @update:model-value="v => d.until = v ? addDays(R.today, 30) : ''"/></div>
+          <label v-if="d.until" class="chip on" style="margin-top:6px"><Ic n="calendar" :s="15"/>{{ gLabel(d.until) }} · {{ jLabel(d.until) }}<input type="date" v-model="d.until" :min="R.today"></label>
+        </template>
+
+        <div class="preview" :class="{bad: problem}">
+          <template v-if="problem"><Ic n="circle-alert" :s="17"/><span>{{ problem }}</span></template>
+          <template v-else><Ic n="bell" :s="17"/><span>Next: <b>{{ preview.map(whenShort).join(' · ') }}</b></span></template>
+        </div>
+
+        <div class="btn-row">
+          <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove" aria-label="Delete reminder"><Ic n="trash-2"/></button>
+          <button class="btn primary" @click="save">{{ isEdit ? 'Save' : 'Add reminder' }}</button>
+        </div>
+      </template>
+    </div>
+  </Sheet>`,
+};
+
+const RemindersView = {
+  setup() {
+    const list = computed(() => S.reminders.map(r => {
+      const next = r.on === false ? [] : remNext(r);
+      return { r, next: next[0] || null, done: r.on !== false && !next.length };
+    }).sort((a, b) => (a.r.on === false) - (b.r.on === false) || (a.next || 9e15) - (b.next || 9e15)));
+    const active = computed(() => S.reminders.filter(r => r.on !== false).length);
+    function toggle(r, v) { r.on = v; Native.vibrate(8); if (v && Native.has) Native.askNotify(); say(v ? 'Reminder on' : 'Paused. Turn it back on any time'); }
+    function remove(r) { const i = S.reminders.indexOf(r); S.reminders.splice(i, 1); say('"' + r.title + '" deleted', () => S.reminders.splice(i, 0, r)); }
+    return { list, active, toggle, remove, whenShort };
+  },
+  template: `<div class="view" style="--acc:var(--c-mood)">
+    <Head title="Reminders" :sub="active ? active + ' active' : 'Nudges you set yourself'"/>
+    <button v-if="!remReady && S.reminders.length" class="card hint-card tap" @click="go('alerts')">
+      <Ic n="bell" :s="18"/><span class="grow">Notifications aren't on for this phone yet. Tap to set them up.</span><Ic n="chevron-right" :s="18"/></button>
+    <template v-if="S.reminders.length">
+      <TransitionGroup name="list" tag="div" class="tlist rel">
+        <Swipe v-for="x in list" :key="x.r.id" @remove="remove(x.r)" @tap="ui.rem = {ref: x.r}">
+          <div class="rem" :class="{off: x.r.on === false || x.done}" :style="{'--c': x.r.color}">
+            <span class="e">{{ x.r.emoji }}</span>
+            <div class="grow">
+              <div class="t">{{ x.r.title }}</div>
+              <div class="s">{{ remSummary(x.r) }}</div>
+              <div class="n" v-if="x.r.on === false">Paused</div>
+              <div class="n" v-else-if="x.done">Finished</div>
+              <div class="n on" v-else>Next {{ whenShort(x.next) }}</div>
+            </div>
+            <Toggle :model-value="x.r.on !== false" @update:model-value="v => toggle(x.r, v)" @click.stop @pointerdown.stop/>
+          </div>
+        </Swipe>
+      </TransitionGroup>
+      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">Tap to edit · switch to pause · swipe left to delete</p>
+    </template>
+    <Empty v-else e="⏰" t="No reminders yet" s="Water, medicine, stretching, bills… set a nudge for anything.">
+      <button class="btn primary" @click="ui.rem = {}"><Ic n="plus" :s="18"/>New reminder</button></Empty>
+    <button class="fab" @click="ui.rem = {}" aria-label="New reminder"><Ic n="plus" :s="26" :w="2.4"/></button>
+  </div>`,
+};
+
 const SettingsView = {
   setup() {
     const imp = ref(false), txt = ref(''), reset = ref(false);
@@ -3033,7 +3251,7 @@ const App = {
     ];
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
-      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView,
+      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, reminders: RemindersView,
     };
     const current = computed(() => nav.screen || nav.tab);
     function tab(id) {
@@ -3052,7 +3270,7 @@ const App = {
         <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :style="{'--acc': t.c}" @click="tab(t.id)">
           <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/></span>{{ t.l }}</button>
       </nav>
-      <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/>
+      <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/><RemSheet/>
     </template>
     <Transition name="toast"><div v-if="toast.msg" class="toast" :key="toast.id"><span>{{ toast.msg }}</span><button v-if="toast.undo" @click="doUndo"><Ic n="undo-2" :s="15" style="display:inline;vertical-align:-2px"/> Undo</button></div></Transition>
   </div>`,
@@ -3062,14 +3280,14 @@ const app = createApp(App);
 Object.assign(app.config.globalProperties, {
   APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
-  clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
+  remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
+const live = { waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
-  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('Onboarding', Onboarding);
+  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding);
 app.mount('#app');
 
 if (!Native.has) {

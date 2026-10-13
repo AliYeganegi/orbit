@@ -23,13 +23,14 @@ import java.util.Set;
 /**
  * On-device reminder scheduling. The web app sends its full reminder plan via {@link #sync};
  * we diff it against what is stored, cancel what disappeared and (re)arm the rest as exact alarms.
- * Water is a rule, not a list: only the next occurrence is armed and the next one is computed when
- * it fires, so reminders keep going even if the app is never opened.
+ * Repeating reminders (water included) are rules, not lists: only each rule's next occurrence is armed
+ * and the following one is computed when it fires, so they keep going even if the app is never opened.
  * The plan is persisted so alarms survive reboots, time changes and app updates.
  */
 final class Scheduler {
     static final String ACT_REMIND = "me.ali.orbit.REMIND";
-    static final String ACT_WATER = "me.ali.orbit.WATER";
+    static final String ACT_WATER = "me.ali.orbit.WATER"; // legacy (<= 1.7), now a rule
+    static final String ACT_RULE = "me.ali.orbit.RULE";
     static final String ACT_WATER_ADD = "me.ali.orbit.WATER_ADD";
     static final String ACT_DONE = "me.ali.orbit.TASK_DONE";
     static final String ACT_SNOOZE = "me.ali.orbit.SNOOZE";
@@ -51,6 +52,7 @@ final class Scheduler {
         if (nm == null) return;
         channel(nm, "tasks", "Task reminders", "Reminders at the time you set on a task", NotificationManager.IMPORTANCE_HIGH);
         channel(nm, "water", "Water reminders", "Gentle nudges to drink water", NotificationManager.IMPORTANCE_DEFAULT);
+        channel(nm, "reminders", "Personal reminders", "Reminders you create yourself", NotificationManager.IMPORTANCE_HIGH);
         channel(nm, "focus", "Focus timer", "When a focus session or break ends", NotificationManager.IMPORTANCE_HIGH);
         channel(nm, "cycle", "Cycle", "Upcoming period reminders", NotificationManager.IMPORTANCE_DEFAULT);
         if (nm.getNotificationChannel("orbit_reminders") != null) nm.deleteNotificationChannel("orbit_reminders");
@@ -88,12 +90,24 @@ final class Scheduler {
             String id = old.getJSONObject(i).getString("id");
             if (!nextIds.contains(id)) cancel(c, ACT_REMIND, id);
         }
-        prefs(c).edit()
-                .putString("reminders", next.toString())
-                .putString("water", plan.optJSONObject("water") != null ? plan.getJSONObject("water").toString() : "")
-                .apply();
+        JSONArray rules = plan.optJSONArray("rules");
+        if (rules == null) rules = new JSONArray();
+        JSONArray oldRules = rules(c);
+        Set<String> ruleIds = new HashSet<>();
+        for (int i = 0; i < rules.length(); i++) {
+            JSONObject r = rules.getJSONObject(i);
+            ruleIds.add(r.getString("id"));
+            JSONObject prev = find(oldRules, r.getString("id"));
+            if (prev != null && prev.has("sent")) r.put("sent", prev.getLong("sent")); // keep "already delivered" marker
+        }
+        for (int i = 0; i < oldRules.length(); i++) {
+            String id = oldRules.getJSONObject(i).getString("id");
+            if (!ruleIds.contains(id)) cancel(c, ACT_RULE, id);
+        }
+        cancel(c, ACT_WATER, "water"); // the old single water alarm, superseded by rules
+        prefs(c).edit().putString("reminders", next.toString()).putString("rules", rules.toString()).remove("water").apply();
         for (int i = 0; i < next.length(); i++) arm(c, next.getJSONObject(i));
-        armWater(c);
+        for (int i = 0; i < rules.length(); i++) armRule(c, rules.getJSONObject(i));
     }
 
     /** Re-arms everything from storage (boot, time change, app update). */
@@ -102,7 +116,8 @@ final class Scheduler {
             JSONArray rs = reminders(c);
             long now = System.currentTimeMillis();
             for (int i = 0; i < rs.length(); i++) if (rs.getJSONObject(i).optLong("at") > now) arm(c, rs.getJSONObject(i));
-            armWater(c);
+            JSONArray rules = rules(c);
+            for (int i = 0; i < rules.length(); i++) armRule(c, rules.getJSONObject(i));
         } catch (JSONException ignored) { }
     }
 
@@ -130,14 +145,14 @@ final class Scheduler {
         pi.cancel();
     }
 
-    private static void armWater(Context c) {
-        JSONObject w = water(c);
-        long at = nextWater(w, System.currentTimeMillis());
-        if (at > 0) setExact(c, at, alarmIntent(c, ACT_WATER, "water", PendingIntent.FLAG_UPDATE_CURRENT));
-        else cancel(c, ACT_WATER, "water");
+    private static void armRule(Context c, JSONObject r) {
+        String id = r.optString("id");
+        long at = nextRule(r, Math.max(System.currentTimeMillis(), r.optLong("sent", 0)));
+        if (at > 0) setExact(c, at, alarmIntent(c, ACT_RULE, id, PendingIntent.FLAG_UPDATE_CURRENT));
+        else cancel(c, ACT_RULE, id);
     }
 
-    // ---------------------------------------------------------------- water rule (mirrors web/schedule.js)
+    // ---------------------------------------------------------------- rules (mirrors web/schedule.js)
 
     static String dayKey(Calendar d) {
         return String.format(Locale.US, "%04d-%02d-%02d", d.get(Calendar.YEAR), d.get(Calendar.MONTH) + 1, d.get(Calendar.DAY_OF_MONTH));
@@ -148,28 +163,77 @@ final class Scheduler {
         return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]);
     }
 
-    static long nextWater(JSONObject w, long from) {
-        if (w == null || !w.optBoolean("on")) return -1;
-        int every = w.optInt("every", 60);
-        if (every < 15) return -1;
-        int start = toMin(w.optString("start", "09:00")), end = toMin(w.optString("end", "22:00"));
-        JSONArray days = w.optJSONArray("days");
-        boolean stopAtGoal = w.optBoolean("stopAtGoal", true);
-        String goalDay = w.optString("goalDay", "");
+    private static boolean isHHMM(String s) {
+        return s != null && s.matches("([01]\\d|2[0-3]):[0-5]\\d");
+    }
+
+    private static long at(Calendar day, int minutes) {
+        Calendar d = (Calendar) day.clone();
+        d.set(Calendar.HOUR_OF_DAY, minutes / 60);
+        d.set(Calendar.MINUTE, minutes % 60);
+        d.set(Calendar.SECOND, 0);
+        d.set(Calendar.MILLISECOND, 0);
+        return d.getTimeInMillis();
+    }
+
+    /** Day-of-month and "is last day of month" in the Gregorian or Persian (Shamsi) calendar. */
+    private static int[] dom(Calendar d, boolean jalali) {
+        if (!jalali) return new int[]{d.get(Calendar.DAY_OF_MONTH), d.get(Calendar.DAY_OF_MONTH) == d.getActualMaximum(Calendar.DAY_OF_MONTH) ? 1 : 0};
+        android.icu.util.Calendar pc = android.icu.util.Calendar.getInstance(new android.icu.util.ULocale("en_US@calendar=persian"));
+        pc.setTimeInMillis(at(d, 12 * 60));
+        int day = pc.get(android.icu.util.Calendar.DAY_OF_MONTH), month = pc.get(android.icu.util.Calendar.MONTH);
+        pc.add(android.icu.util.Calendar.DAY_OF_MONTH, 1);
+        return new int[]{day, pc.get(android.icu.util.Calendar.MONTH) != month ? 1 : 0};
+    }
+
+    /** The water goal counts as reached today if the app said so, or if "+1 glass" taps got there. */
+    private static String goalDay(JSONObject r) {
+        String today = dayKey(Calendar.getInstance());
+        if (today.equals(r.optString("day")) && r.optInt("count", 0) >= r.optInt("goal", Integer.MAX_VALUE)) return today;
+        return r.optString("goalDay", "");
+    }
+
+    static long nextRule(JSONObject r, long from) {
+        if (r == null || !r.optBoolean("on", true)) return -1;
+        String kind = r.optString("kind", "interval"), until = r.optString("until", "");
+        JSONArray days = r.optJSONArray("days");
         Calendar base = Calendar.getInstance();
         base.setTimeInMillis(from);
-        for (int i = 0; i < 9; i++) {
+        if ("once".equals(kind)) {
+            String[] p = r.optString("date", "").split("-");
+            if (p.length != 3 || !isHHMM(r.optString("time"))) return -1;
+            Calendar d = Calendar.getInstance();
+            d.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2]));
+            long t = at(d, toMin(r.optString("time")));
+            return t > from ? t : -1;
+        }
+        int horizon = "monthly".equals(kind) ? 400 : 9;
+        for (int i = 0; i < horizon; i++) {
             Calendar d = (Calendar) base.clone();
             d.add(Calendar.DAY_OF_YEAR, i);
-            if (days != null && !contains(days, d.get(Calendar.DAY_OF_WEEK) - 1)) continue;
-            if (stopAtGoal && dayKey(d).equals(goalDay)) continue;
-            for (int t = start; t <= end; t += every) {
-                d.set(Calendar.HOUR_OF_DAY, t / 60);
-                d.set(Calendar.MINUTE, t % 60);
-                d.set(Calendar.SECOND, 0);
-                d.set(Calendar.MILLISECOND, 0);
-                if (d.getTimeInMillis() > from) return d.getTimeInMillis();
+            String key = dayKey(d);
+            if (!until.isEmpty() && key.compareTo(until) > 0) break;
+            int wd = d.get(Calendar.DAY_OF_WEEK) - 1;
+            java.util.List<Integer> slots = new java.util.ArrayList<>();
+            if ("interval".equals(kind)) {
+                int every = r.optInt("every", 60);
+                if (every < 15 || !isHHMM(r.optString("start")) || !isHHMM(r.optString("end"))) return -1;
+                if (days != null && !contains(days, wd)) continue;
+                if (r.optBoolean("stopAtGoal") && key.equals(goalDay(r))) continue;
+                for (int t = toMin(r.optString("start")); t <= toMin(r.optString("end")); t += every) slots.add(t);
+            } else if ("daily".equals(kind)) {
+                if (days != null && !contains(days, wd)) continue;
+                JSONArray times = r.optJSONArray("times");
+                if (times != null) for (int j = 0; j < times.length(); j++) if (isHHMM(times.optString(j))) slots.add(toMin(times.optString(j)));
+                java.util.Collections.sort(slots);
+            } else if ("monthly".equals(kind)) {
+                if (!isHHMM(r.optString("time"))) return -1;
+                int want = r.optInt("dom", 1);
+                int[] dm = dom(d, "jal".equals(r.optString("cal")));
+                if (!(dm[0] == want || (dm[1] == 1 && dm[0] < want))) continue;
+                slots.add(toMin(r.optString("time")));
             }
+            for (int t : slots) { long ms = at(d, t); if (ms > from) return ms; }
         }
         return -1;
     }
@@ -203,17 +267,37 @@ final class Scheduler {
         } catch (JSONException ignored) { }
     }
 
+    /** Old single water alarm from version 1.7 or earlier: rules replace it. */
     static synchronized void onWater(Context c) {
-        JSONObject w = water(c);
-        if (w != null && w.optBoolean("on") && !goalReachedToday(w)) {
-            int count = todayCount(w), goal = w.optInt("goal", 8);
-            String body = count == 0 ? "No water logged yet today" : count + " of " + goal + " glasses so far today";
-            Notification.Builder b = base(c, "water", "💧 Time for some water", body, "water", "water");
-            b.addAction(action(c, ACT_WATER_ADD, "water", "+1 glass (" + w.optInt("glassMl", 250) + " ml)", null));
-            b.setTimeoutAfter(50 * 60_000L);
-            notify(c, WATER_NOTIF, b.build());
-        }
-        armWater(c);
+        cancel(c, ACT_WATER, "water");
+    }
+
+    static synchronized void onRule(Context c, String id) {
+        try {
+            JSONArray rules = rules(c);
+            JSONObject r = find(rules, id);
+            if (r == null) return;
+            r.put("sent", System.currentTimeMillis());
+            prefs(c).edit().putString("rules", rules.toString()).apply();
+            if (r.optBoolean("water")) {
+                if (!(r.optBoolean("stopAtGoal") && dayKey(Calendar.getInstance()).equals(goalDay(r)))) {
+                    int count = todayCount(r), goal = r.optInt("goal", 8);
+                    String body = count == 0 ? "No water logged yet today" : count + " of " + goal + " glasses so far today";
+                    Notification.Builder b = base(c, "water", r.optString("title", "💧 Time for some water"), body, "water", "water");
+                    b.addAction(action(c, ACT_WATER_ADD, id, "+1 glass (" + r.optInt("glassMl", 250) + " ml)", null));
+                    b.setTimeoutAfter(50 * 60_000L);
+                    notify(c, WATER_NOTIF, b.build());
+                }
+            } else {
+                String title = r.optString("title", "Reminder"), body = r.optString("body", "");
+                Notification.Builder b = base(c, "reminders", title, body, "reminders", "rule:" + id);
+                JSONObject snooze = new JSONObject().put("title", title).put("body", body).put("task", "");
+                b.addAction(action(c, ACT_DONE, "rule:" + id, "✓ Done", snooze));
+                b.addAction(action(c, ACT_SNOOZE, "rule:" + id, "Snooze " + SNOOZE_MIN + " min", snooze));
+                notify(c, ("rule:" + id).hashCode(), b.build());
+            }
+            armRule(c, r);
+        } catch (JSONException ignored) { }
     }
 
     static synchronized void onAction(Context c, Intent intent) {
@@ -222,28 +306,30 @@ final class Scheduler {
         NotificationManager nm = c.getSystemService(NotificationManager.class);
         try {
             if (ACT_WATER_ADD.equals(action)) {
-                JSONObject w = water(c);
+                JSONArray rules = rules(c);
+                JSONObject w = find(rules, id);
                 if (w == null) return;
                 String today = dayKey(Calendar.getInstance());
                 int count = todayCount(w) + 1, goal = w.optInt("goal", 8);
                 w.put("day", today).put("count", count);
                 if (count >= goal) w.put("goalDay", today);
-                prefs(c).edit().putString("water", w.toString()).apply();
+                prefs(c).edit().putString("rules", rules.toString()).apply();
                 enqueue(c, new JSONObject().put("t", "water").put("day", today).put("n", 1));
                 String title = count >= goal ? "Goal reached! 🎉" : "Logged 💧";
                 Notification.Builder b = base(c, "water", title, count + " of " + goal + " glasses today", "water", "water");
                 b.setOnlyAlertOnce(true).setTimeoutAfter(4000);
                 notify(c, WATER_NOTIF, b.build());
-                armWater(c);
+                armRule(c, w);
             } else if (ACT_DONE.equals(action)) {
-                enqueue(c, new JSONObject().put("t", "done").put("id", intent.getStringExtra("task")).put("at", System.currentTimeMillis()));
+                String task = intent.getStringExtra("task");
+                if (task != null && !task.isEmpty()) enqueue(c, new JSONObject().put("t", "done").put("id", task).put("at", System.currentTimeMillis()));
                 if (nm != null) nm.cancel(id.hashCode());
             } else if (ACT_SNOOZE.equals(action)) {
                 String sid = id.startsWith("snooze:") ? id : "snooze:" + id;
                 JSONObject r = new JSONObject()
                         .put("id", sid).put("at", System.currentTimeMillis() + SNOOZE_MIN * 60_000L)
-                        .put("ch", "tasks").put("title", intent.getStringExtra("title")).put("body", intent.getStringExtra("body"))
-                        .put("task", intent.getStringExtra("task")).put("go", "tasks");
+                        .put("ch", id.startsWith("rule:") ? "reminders" : "tasks").put("title", intent.getStringExtra("title")).put("body", intent.getStringExtra("body"))
+                        .put("task", intent.getStringExtra("task")).put("go", id.startsWith("rule:") ? "reminders" : "tasks");
                 JSONArray rs = reminders(c);
                 rs.put(r);
                 prefs(c).edit().putString("reminders", rs.toString()).apply();
@@ -278,6 +364,7 @@ final class Scheduler {
         switch (ch) {
             case "water": return 0xFF3BA4FF;
             case "focus": return 0xFFFF6B5B;
+            case "reminders": return 0xFFF5A524;
             case "cycle": return 0xFFFF5C9A;
             default: return 0xFF7C6CFF;
         }
@@ -301,19 +388,19 @@ final class Scheduler {
         try { return new JSONArray(prefs(c).getString("reminders", "[]")); } catch (JSONException e) { return new JSONArray(); }
     }
 
-    private static JSONObject water(Context c) {
-        String s = prefs(c).getString("water", "");
-        if (s.isEmpty()) return null;
-        try { return new JSONObject(s); } catch (JSONException e) { return null; }
+    private static JSONArray rules(Context c) {
+        try { return new JSONArray(prefs(c).getString("rules", "[]")); } catch (JSONException e) { return new JSONArray(); }
+    }
+
+    private static JSONObject find(JSONArray a, String id) {
+        for (int i = 0; i < a.length(); i++) { JSONObject o = a.optJSONObject(i); if (o != null && id.equals(o.optString("id"))) return o; }
+        return null;
     }
 
     private static int todayCount(JSONObject w) {
         return dayKey(Calendar.getInstance()).equals(w.optString("day")) ? w.optInt("count", 0) : 0;
     }
 
-    private static boolean goalReachedToday(JSONObject w) {
-        return w.optBoolean("stopAtGoal", true) && dayKey(Calendar.getInstance()).equals(w.optString("goalDay"));
-    }
 
     // ---------------------------------------------------------------- action queue for the app
 

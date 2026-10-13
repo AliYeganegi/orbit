@@ -29,7 +29,7 @@ const OUT = process.argv[3];
     g.S.cycleDays.push(g.addDays(k, -8));`);
 
   for (const t of ['today', 'tasks', 'habits', 'money', 'more']) await step('tab ' + t, () => G(`g.nav.screen = null; g.nav.tab = '${t}'`));
-  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts', 'reports']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
+  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts', 'reports', 'reminders']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
 
   // bank SMS → drafts → categorize
   await step('sms import', () => p.evaluate(() => {
@@ -80,6 +80,30 @@ const OUT = process.argv[3];
   await step('countdown sheet', async () => { await G(`g.nav.screen = 'countdowns'`); await p.waitForTimeout(300); await p.click('.fab'); });
   await G(`window.orbitBack()`);
   await step('cycle settings', async () => { await G(`g.nav.screen = 'cycle'`); await p.waitForTimeout(300); await p.click('.top .icon-btn:last-child'); });
+  await G(`window.orbitBack()`);
+
+  // reminders: water is one, add from template, custom daily with two times, validation, pause, delete
+  await step('reminders screen', () => G(`g.nav.screen = 'reminders'`));
+  assert.ok(await p.evaluate(() => S.reminders.some(r => r.water)), 'drink water is a reminder');
+  await step('template picker', () => p.click('.fab'));
+  await step('add from template', async () => { await p.click('.tpl-grid .tpl >> nth=0'); await p.click('.sheet .btn.primary'); });
+  await step('custom reminder', async () => { await p.click('.fab'); await p.click('.tpl-grid .tpl >> nth=-1'); });
+  await step('save without name explains', () => p.click('.sheet .btn.primary'));
+  assert.ok(await p.evaluate(() => /Give the reminder a name/.test(document.querySelector('.sheet').textContent)));
+  await step('daily, two times', async () => {
+    await p.fill('.sheet .field-title', 'Vitamins'); await p.click('.sheet .seg button:nth-child(2)'); await p.click('text=Add time');
+    await p.click('.sheet .btn.primary');
+  });
+  const vit = await p.evaluate(() => { const r = S.reminders.find(x => x.title === 'Vitamins'); return r && { kind: r.kind, times: r.times.length, rule: remRules.value.some(x => x.id === r.id) }; });
+  assert.deepEqual(vit, { kind: 'daily', times: 2, rule: true }, 'custom daily reminder saved and scheduled');
+  await step('pause reminder', () => p.click('.rem:has-text("Vitamins") .toggle'));
+  assert.equal(await p.evaluate(() => S.reminders.find(x => x.title === 'Vitamins').on), false, 'paused');
+  await step('edit reminder', () => p.click('.rem:has-text("Vitamins") .grow'));
+  await step('delete reminder', () => p.click('.sheet .btn.danger'));
+  assert.ok(await p.evaluate(() => payload().rules.every(r => r.kind && r.title)), 'payload carries rules');
+  await G(`g.nav.screen = 'water'`);
+  await step('water → its reminder', () => p.click('.view button.list-row >> nth=0'));
+  assert.equal(await p.evaluate(() => !!(ui.rem && ui.rem.ref && ui.rem.ref.water)), true, 'water screen opens the water reminder');
   await G(`window.orbitBack()`);
 
   // cycle: tabs, day log, settings

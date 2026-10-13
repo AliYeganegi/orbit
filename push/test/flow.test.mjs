@@ -83,6 +83,26 @@ try {
   assert.ok(g.data.next >= slot.getTime() + 864e5 - 60e3, 'goal reached today skips to tomorrow');
   console.log('✓ water rule fires on time (' + (wmsg.t - slot.getTime()) + 'ms), goal pauses the day');
 
+  // personal reminders: a one-time rule a few seconds out, and a daily rule at the next whole minute
+  const soon = new Date(Math.ceil((Date.now() + 2000) / 60e3) * 60e3);
+  const hm2 = String(soon.getUTCHours()).padStart(2, '0') + ':' + String(soon.getUTCMinutes()).padStart(2, '0');
+  const day = soon.toISOString().slice(0, 10);
+  const rs = await call('/sync', { token, body: { tz: 'UTC', reminders: [], rules: [
+    { id: 'pill', kind: 'daily', times: [hm2], c: 'SEALED-PILL' },
+    { id: 'rent', kind: 'once', date: day, time: hm2, c: 'SEALED-RENT' },
+    { id: 'bad', kind: 'weekly', c: 'x' },
+  ] } });
+  assert.equal(rs.data.rules, 2, 'invalid rule kind dropped');
+  const n0 = received.length;
+  for (let i = 0; i < 300 && received.length < n0 + 2; i++) await sleep(250);
+  const got = received.slice(n0).map(x => x.msg);
+  assert.deepEqual(got.map(m => m.id).sort(), ['rule:pill', 'rule:rent']);
+  assert.ok(got.every(m => m.k === 'rule' && m.c.startsWith('SEALED-')), 'rule payload carries the sealed text');
+  assert.ok(Math.abs(received.at(-1).t - soon.getTime()) < 1500, 'on time');
+  await sleep(2500);
+  assert.equal(received.length, n0 + 2, 'each slot delivered exactly once');
+  console.log('✓ personal reminder rules delivered on time, once each, text stays sealed');
+
   respondWith = 410; // phone unsubscribed
   await call('/test', { token });
   assert.equal((await call('/sync', { token, body: {} })).status, 401, 'device forgotten after 410 Gone');
