@@ -160,6 +160,12 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == 2) js("window.orbitSmsPermission && window.orbitSmsPermission(" + Sms.granted(this) + ")");
+    }
+
+    @Override
     protected void onPause() {
         super.onPause();
         web.onPause();
@@ -216,6 +222,49 @@ public class MainActivity extends Activity {
             send.putExtra(Intent.EXTRA_SUBJECT, "Orbit backup");
             send.putExtra(Intent.EXTRA_TEXT, text);
             runOnUiThread(() -> startActivity(Intent.createChooser(send, "Save backup to…")));
+        }
+
+        // ---- bank SMS ----
+        @JavascriptInterface
+        public String smsStatus() {
+            boolean asked = getSharedPreferences("orbit_sms", MODE_PRIVATE).getBoolean("asked", false);
+            boolean blocked = asked && !Sms.granted(MainActivity.this) && !shouldShowRequestPermissionRationale(Manifest.permission.READ_SMS);
+            return "{\"granted\":" + Sms.granted(MainActivity.this) + ",\"on\":" + Sms.enabled(MainActivity.this) + ",\"blocked\":" + blocked + "}";
+        }
+
+        @JavascriptInterface
+        public void smsRequest() {
+            getSharedPreferences("orbit_sms", MODE_PRIVATE).edit().putBoolean("asked", true).apply();
+            runOnUiThread(() -> requestPermissions(new String[]{Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS}, 2));
+        }
+
+        @JavascriptInterface
+        public void smsEnable(boolean on) {
+            Sms.setEnabled(MainActivity.this, on);
+        }
+
+        @JavascriptInterface
+        public String smsScan(String since) {
+            return Sms.scan(MainActivity.this, Long.parseLong(since));
+        }
+
+        @JavascriptInterface
+        public String smsDrain() {
+            return Sms.drain(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public String readClipboard() {
+            ClipboardManager cm = getSystemService(ClipboardManager.class);
+            if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip().getItemCount() == 0) return "";
+            CharSequence t = cm.getPrimaryClip().getItemAt(0).coerceToText(MainActivity.this);
+            return t == null ? "" : t.toString();
+        }
+
+        @JavascriptInterface
+        public void openAppSettings() {
+            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+            runOnUiThread(() -> startActivity(i));
         }
 
         @JavascriptInterface

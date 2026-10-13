@@ -116,6 +116,8 @@ const CATS_IN = [
   { id: 'otherin', l: 'Other', e: '💰', c: '#3ba4ff' },
 ];
 const CAT = Object.fromEntries([...CATS_OUT, ...CATS_IN].map(c => [c.id, c]));
+const UNCAT = { id: '', l: 'To review', e: '❔', c: '#94a3b8' };
+const catOf = id => CAT[id] || UNCAT;
 const NOTE_COLORS = ['', '#f5b83d', '#ff6b5b', '#22c55e', '#3ba4ff', '#a78bfa', '#ff5c9a'];
 const CD_EMOJI = ['🎂', '✈️', '🎉', '💍', '🎓', '🏖️', '💼', '❤️', '🌸', '🏠', '👶', '⭐', '🎁', '🏆', '📅', '🌙'];
 const MODES = {
@@ -166,11 +168,12 @@ const defaults = () => ({
     name: '', theme: 'system', onboarded: false,
     waterGoal: 8, glassMl: 250, budget: 0,
     focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
-    cycle: { name: '', len: 28, plen: 5, notify: true },
+    cycle: { name: '', len: 28, plen: 5, notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' } },
     notify: { tasks: true, focus: true },
+    sms: { on: false, unit: 'rial', last: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
   },
-  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [],
+  tasks: [], habits: [], notes: [], money: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [],
   water: {}, mood: {}, focusLog: {},
   timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
@@ -181,7 +184,7 @@ function hydrate(raw) {
   d.timer = { ...defaults().timer, ...(raw.timer || {}) };
   const s = raw.settings || {};
   const ds = defaults().settings;
-  d.settings = { ...ds, ...s, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}) }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
+  d.settings = { ...ds, ...s, sms: { ...ds.sms, ...(s.sms || {}) }, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}), pill: { ...ds.cycle.pill, ...((s.cycle || {}).pill || {}) } }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
   return d;
 }
 function load() { try { return hydrate(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return defaults(); } }
@@ -417,6 +420,102 @@ const curJ = computed(() => jal(R.today));
 function monthTx(y, m) { return S.money.filter(t => { const j = jal(t.date); return j.y === y && j.m === m; }); }
 const spentThisMonth = computed(() => monthTx(curJ.value.y, curJ.value.m).filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0));
 
+/* Jalali calendar helpers for reports */
+function jToKey(y, m, d) {
+  const g = new Date(y + 621, 2, 21);
+  g.setDate(g.getDate() + (m - 1) * 30 + Math.min(m - 1, 6) + d - 1);
+  let k = keyOf(g);
+  for (let i = 0; i < 6; i++) {
+    const j = jal(k), diff = (y - j.y) * 400 + (m - j.m) * 31 + (d - j.d);
+    if (!diff) return k;
+    k = addDays(k, diff > 0 ? 1 : -1);
+  }
+  return k;
+}
+function jMonthKeys(y, m) {
+  const out = []; let k = jToKey(y, m, 1);
+  while (jal(k).m === m && out.length < 32) { out.push(k); k = addDays(k, 1); }
+  return out;
+}
+const jShift = (y, m, n) => { m += n; while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; } return { y, m }; };
+
+/* bank SMS → draft transactions (Android) */
+const Sms = reactive({ granted: false, blocked: false, busy: false });
+function smsRefresh() {
+  if (!AN || !AN.smsStatus) return;
+  try { const st = JSON.parse(AN.smsStatus()); Sms.granted = st.granted; Sms.blocked = st.blocked; } catch (e) {}
+}
+function smsImport(list) {
+  const seen = new Set(S.smsSeen), added = [];
+  for (const m of list) {
+    const h = OrbitSms.hash(m.sender, m.ts, m.body);
+    if (seen.has(h)) continue;
+    seen.add(h);
+    const p = OrbitSms.parse(m.body, { sender: m.sender, unit: S.settings.sms.unit });
+    if (!p || !p.amount) continue;
+    const d = new Date(m.ts);
+    const tx = { id: uid(), type: p.type, amount: p.amount, cat: '', note: '', date: keyOf(d), time: pad(d.getHours()) + ':' + pad(d.getMinutes()),
+      created: m.ts, pending: true, src: 'sms', bank: p.bank, card: p.card, balance: p.balance, sms: h };
+    S.money.unshift(tx); added.push(tx);
+  }
+  S.smsSeen = [...seen].slice(-1500);
+  return added;
+}
+function smsSync() {
+  if (!AN || !AN.smsScan || !S.settings.sms.on) return [];
+  smsRefresh();
+  if (!Sms.granted) return [];
+  let list = [];
+  try { list = JSON.parse(AN.smsDrain()); } catch (e) {}
+  const since = S.settings.sms.last || Date.now() - 30 * 864e5;
+  try { list = list.concat(JSON.parse(AN.smsScan(String(since - 3600e3)))); } catch (e) {}
+  S.settings.sms.last = Date.now();
+  return smsImport(list);
+}
+function smsEnable() {
+  if (!AN || !AN.smsRequest) return;
+  smsRefresh();
+  if (Sms.granted) return smsTurnOn();
+  if (Sms.blocked) { AN.openAppSettings(); say('Allow SMS in App info → Permissions'); return; }
+  Sms.busy = true;
+  AN.smsRequest();
+}
+function smsTurnOn() {
+  S.settings.sms.on = true; S.settings.sms.last = 0;
+  AN.smsEnable(true);
+  const added = smsSync();
+  Sms.busy = false;
+  say(added.length ? added.length + ' bank transaction' + (added.length > 1 ? 's' : '') + ' found from the last 30 days' : 'On. New bank SMS will show up here automatically');
+}
+function smsDisable() { S.settings.sms.on = false; if (AN && AN.smsEnable) AN.smsEnable(false); say('Bank SMS import turned off'); }
+window.orbitSmsPermission = granted => {
+  smsRefresh(); Sms.busy = false;
+  if (granted) smsTurnOn(); else say(Sms.blocked ? 'SMS access is blocked. Allow it in App info → Permissions' : 'SMS access was not allowed');
+};
+async function readClipboard() {
+  try { if (AN && AN.readClipboard) return AN.readClipboard(); } catch (e) {}
+  try { return await navigator.clipboard.readText(); } catch (e) { return ''; }
+}
+const pendingTx = computed(() => S.money.filter(t => t.pending).sort((a, b) => b.created - a.created));
+// the categories this person uses most, for one-tap categorizing
+const topCats = computed(() => {
+  const n = {};
+  S.money.forEach(t => { if (t.cat && t.type === 'out') n[t.cat] = (n[t.cat] || 0) + 1; });
+  const ranked = Object.keys(n).filter(id => CAT[id]).sort((a, b) => n[b] - n[a]);
+  for (const c of CATS_OUT) if (!ranked.includes(c.id)) ranked.push(c.id);
+  return ranked.slice(0, 5).map(id => CAT[id]);
+});
+function categorize(t, cat) {
+  const prev = { cat: t.cat, pending: t.pending };
+  t.cat = cat; t.pending = false;
+  Native.vibrate(10);
+  say('Added to ' + catOf(cat).l, () => Object.assign(t, prev));
+}
+function dismissTx(t) {
+  const i = S.money.indexOf(t); S.money.splice(i, 1);
+  say('Removed', () => S.money.splice(i, 0, t));
+}
+
 /* countdowns */
 function cdTarget(c) {
   const t = R.today;
@@ -491,6 +590,199 @@ function togglePeriodDay(k) {
   if (i >= 0) S.cycleDays.splice(i, 1); else S.cycleDays.push(k);
   Native.vibrate(12);
 }
+/* ---------- cycle tracker: logging, stats, guidance ---------- */
+const FLOWS = [{ v: 0, l: 'None' }, { v: 1, l: 'Spotting', d: 1 }, { v: 2, l: 'Light', d: 1 }, { v: 3, l: 'Medium', d: 2 }, { v: 4, l: 'Heavy', d: 3 }];
+const SYMPTOMS = [
+  { id: 'cramps', l: 'Cramps', e: '🤕' }, { id: 'headache', l: 'Headache', e: '🤯' }, { id: 'bloating', l: 'Bloating', e: '🎈' },
+  { id: 'tender', l: 'Tender breasts', e: '💢' }, { id: 'backache', l: 'Backache', e: '🦴' }, { id: 'acne', l: 'Acne', e: '😖' },
+  { id: 'fatigue', l: 'Fatigue', e: '🥱' }, { id: 'nausea', l: 'Nausea', e: '🤢' }, { id: 'cravings', l: 'Cravings', e: '🍫' },
+  { id: 'insomnia', l: 'Insomnia', e: '🌙' }, { id: 'dizzy', l: 'Dizziness', e: '💫' }, { id: 'digestion', l: 'Upset stomach', e: '🫄' },
+];
+const CMOODS = [
+  { id: 'happy', l: 'Happy', e: '😊' }, { id: 'calm', l: 'Calm', e: '😌' }, { id: 'energetic', l: 'Energetic', e: '⚡' }, { id: 'sensitive', l: 'Sensitive', e: '🥺' },
+  { id: 'irritable', l: 'Irritable', e: '😤' }, { id: 'anxious', l: 'Anxious', e: '😰' }, { id: 'sad', l: 'Sad', e: '😢' }, { id: 'swings', l: 'Mood swings', e: '🎢' },
+  { id: 'libido', l: 'High libido', e: '🔥' },
+];
+const DISCHARGE = [{ id: 'dry', l: 'Dry' }, { id: 'sticky', l: 'Sticky' }, { id: 'creamy', l: 'Creamy' }, { id: 'watery', l: 'Watery' }, { id: 'egg', l: 'Egg white' }];
+const SEXLOG = [{ id: 'none', l: 'None' }, { id: 'protected', l: 'Protected' }, { id: 'unprotected', l: 'Unprotected' }];
+const TESTS = [{ id: '', l: 'Not taken' }, { id: 'neg', l: 'Negative' }, { id: 'pos', l: 'Positive' }];
+const GOALS = [
+  { id: 'track', l: 'Track periods', e: '🗓️', s: 'Predictions and patterns' },
+  { id: 'conceive', l: 'Trying to conceive', e: '👶', s: 'Highlights the best days' },
+  { id: 'avoid', l: 'Avoiding pregnancy', e: '🛡️', s: 'Warns on fertile days' },
+];
+const PHASES = {
+  period: { l: 'Period', c: 'var(--c-cycle)', e: '🩸' },
+  follicular: { l: 'Follicular', c: '#a78bfa', e: '🌱' },
+  fertile: { l: 'Fertile window', c: '#14b8a6', e: '✨' },
+  luteal: { l: 'Luteal', c: '#f5a524', e: '🍂' },
+  pms: { l: 'Pre-period', c: '#f97316', e: '🌧️' },
+  late: { l: 'Late', c: '#ff5a5f', e: '⏳' },
+};
+const PHASE_GUIDE = {
+  period: {
+    desc: 'The uterine lining is shedding. Lower energy and mood dips are normal on these days.',
+    food: ['Iron-rich foods: lentils, spinach, red meat, dates', 'Warm soups and ginger tea can ease cramps', 'A little dark chocolate for magnesium'],
+    move: ['Gentle walks, stretching or yoga', 'Skip intense workouts if you feel drained'],
+    care: ['A heat pad on the lower belly', 'Extra sleep and plenty of water', 'Pain relief like ibuprofen can help, if it suits you'],
+    partner: ['Bring tea, a heat pad or a favourite snack', 'Offer to cook or take over chores', 'Plan a cosy night in'],
+  },
+  follicular: {
+    desc: 'Estrogen is rising. Energy, mood and focus usually pick up.',
+    food: ['Fresh vegetables, lean protein and whole grains', 'Fermented foods like yogurt and pickles'],
+    move: ['A great time for cardio and strength training', 'Try a new class or sport'],
+    care: ['Start new projects and make plans', 'Social plans feel easier now'],
+    partner: ['Great days for an adventure or something new together', 'Energy is usually higher, so plan things you both enjoy'],
+  },
+  fertile: {
+    desc: 'Ovulation is near. These are the days pregnancy is most likely.',
+    food: ['Berries, nuts and seeds for antioxidants', 'Stay well hydrated'],
+    move: ['Strength peaks: HIIT and heavier lifts feel good'],
+    care: ['Confidence and libido often peak', 'Clear, stretchy "egg white" discharge is a sign of ovulation'],
+    partner: ['Plan a date night', 'Not trying for a baby? Use protection these days'],
+  },
+  luteal: {
+    desc: 'Progesterone rises. You may feel calmer at first, then more tired toward the end.',
+    food: ['Complex carbs: oats, brown rice, sweet potato', 'Magnesium: nuts, bananas, leafy greens', 'Go easy on caffeine and salt'],
+    move: ['Moderate exercise: pilates, swimming, brisk walks'],
+    care: ['Wind down earlier in the evening', 'Wrap up tasks rather than start big new ones'],
+    partner: ['Keep plans low-key toward the end of this phase', 'Patience goes a long way'],
+  },
+  pms: {
+    desc: 'Hormones drop before the period. Bloating, cravings and mood swings are common.',
+    food: ['Small, frequent meals keep blood sugar steady', 'Chamomile or peppermint tea', 'Less sugar, salt and caffeine'],
+    move: ['Light walks and stretching help mood and bloating'],
+    care: ['Plan some rest and be kind to yourself', 'Keep pads or a cup handy'],
+    partner: ['Snacks, patience and kindness 💗', 'Don\'t take mood swings personally', 'Ask what would help today'],
+  },
+  late: {
+    desc: 'The period is later than expected. Stress, travel, illness and sleep changes can all delay it.',
+    food: ['Regular, balanced meals'], move: ['Keep moving gently'],
+    care: ['If pregnancy is possible, a home test is reliable from the day of a missed period'],
+    partner: ['Stay calm and supportive', 'If pregnancy is possible, offer to get a test'],
+  },
+};
+const phaseKey = name => ({ Period: 'period', Follicular: 'follicular', 'Fertile window': 'fertile', Ovulation: 'fertile', Luteal: 'luteal', PMS: 'pms', Late: 'late' })[name] || 'luteal';
+
+const sd = a => { if (a.length < 2) return 0; const m = avg(a); return Math.sqrt(avg(a.map(x => (x - m) ** 2))); };
+const clog = k => S.cycleLog[k] || {};
+function setClog(k, patch) {
+  const cur = { ...(S.cycleLog[k] || {}), ...patch };
+  for (const f of Object.keys(cur)) if (cur[f] === '' || cur[f] == null || (Array.isArray(cur[f]) && !cur[f].length)) delete cur[f];
+  if (Object.keys(cur).length) S.cycleLog[k] = cur; else delete S.cycleLog[k];
+}
+function setFlow(k, v) {
+  setClog(k, { flow: v || null });
+  const i = S.cycleDays.indexOf(k), isPeriod = v >= 2;
+  if (isPeriod && i < 0) S.cycleDays.push(k);
+  if (!isPeriod && i >= 0) S.cycleDays.splice(i, 1);
+  Native.vibrate(10);
+}
+
+/** Cycle day and phase for any past or present date. */
+function cycleDayInfo(k) {
+  const c = cyc.value;
+  if (!c.has) return null;
+  let idx = -1;
+  for (let i = 0; i < c.periods.length; i++) if (c.periods[i].start <= k) idx = i;
+  if (idx < 0) return null;
+  const p = c.periods[idx];
+  const nextStart = c.periods[idx + 1] ? c.periods[idx + 1].start : addDays(p.start, c.len);
+  const day = diffDays(p.start, k) + 1, toNext = diffDays(k, nextStart);
+  const ov = addDays(nextStart, -14), logged = diffDays(p.start, p.end) + 1;
+  const plen = logged > 1 ? logged : c.plen;
+  let phase;
+  if (day <= plen || S.cycleDays.includes(k)) phase = 'period';
+  else if (toNext < 0) phase = 'late';
+  else if (k >= addDays(ov, -5) && k <= addDays(ov, 1)) phase = 'fertile';
+  else if (k < ov) phase = 'follicular';
+  else if (toNext <= 3) phase = 'pms';
+  else phase = 'luteal';
+  return { day, phase, ov, toNext, start: p.start };
+}
+/** Pregnancy chance for a date, relative to the estimated ovulation day. */
+function chanceOn(k) {
+  const info = cycleDayInfo(k), c = cyc.value;
+  if (!c.has) return null;
+  const ov = info && info.toNext >= 0 ? info.ov : c.ov;
+  const d = diffDays(ov, k);
+  if (info && info.phase === 'period') return { l: 'Low', v: 0 };
+  if (d === 0 || d === -1) return { l: 'Peak', v: 3 };
+  if (d >= -3 && d <= -2) return { l: 'High', v: 2 };
+  if (d === -5 || d === -4 || d === 1) return { l: 'Medium', v: 1 };
+  return { l: 'Low', v: 0 };
+}
+
+const cycStats = computed(() => {
+  const c = cyc.value;
+  const lens = c.lens.slice(-6), dev = sd(lens);
+  const regularity = c.lens.length < 2 ? { l: 'Learning', s: 'Log 2+ cycles to see this' } : dev <= 2 ? { l: 'Very regular', s: '±' + Math.round(dev) + ' days' } : dev <= 4 ? { l: 'Regular', s: '±' + Math.round(dev) + ' days' } : dev <= 7 ? { l: 'Somewhat irregular', s: '±' + Math.round(dev) + ' days' } : { l: 'Irregular', s: '±' + Math.round(dev) + ' days' };
+  const margin = c.lens.length >= 2 ? Math.max(1, Math.round(dev)) : 3;
+  const cycles = c.periods.map((p, i) => {
+    const next = c.periods[i + 1];
+    const logged = diffDays(p.start, p.end) + 1;
+    return { start: p.start, end: p.end, plen: logged > 1 ? logged : null, clen: next ? diffDays(p.start, next.start) : null };
+  });
+  const preds = c.has ? Array.from({ length: 3 }, (_, i) => { const s = addDays(c.next, i * c.len), o = addDays(s, -14); return { start: s, end: addDays(s, c.plen - 1), ov: o, fStart: addDays(o, -5), fEnd: addDays(o, 1) }; }) : [];
+
+  // symptom and mood patterns across logged days
+  const counts = {}, phaseCounts = {}, cyclesWith = {}, moodByPhase = {};
+  const loggedCycles = new Set();
+  for (const [k, e] of Object.entries(S.cycleLog)) {
+    const info = cycleDayInfo(k);
+    if (!info) continue;
+    loggedCycles.add(info.start);
+    for (const s of e.sym || []) {
+      counts[s] = (counts[s] || 0) + 1;
+      (phaseCounts[s] = phaseCounts[s] || {})[info.phase] = (phaseCounts[s][info.phase] || 0) + 1;
+      (cyclesWith[s] = cyclesWith[s] || new Set()).add(info.start);
+    }
+    for (const m of e.mood || []) { const b = moodByPhase[info.phase] = moodByPhase[info.phase] || {}; b[m] = (b[m] || 0) + 1; }
+  }
+  const nCycles = loggedCycles.size;
+  const symptoms = Object.keys(counts).map(id => {
+    const pc = phaseCounts[id], top = Object.keys(pc).sort((a, b) => pc[b] - pc[a])[0];
+    return { ...SYMPTOMS.find(x => x.id === id), n: counts[id], cycles: cyclesWith[id].size, of: nCycles, phase: top };
+  }).sort((a, b) => b.n - a.n).slice(0, 6);
+  const moods = ['period', 'follicular', 'fertile', 'luteal', 'pms'].map(ph => {
+    const b = moodByPhase[ph] || {};
+    return { ph, top: Object.keys(b).sort((x, y) => b[y] - b[x]).slice(0, 3).map(id => CMOODS.find(m => m.id === id)) };
+  }).filter(r => r.top.length);
+
+  // basal body temperature for the current cycle: a sustained rise of ~0.2°C marks ovulation
+  let bbt = null;
+  if (c.has) {
+    const pts = [];
+    for (let d = 0; d <= diffDays(c.last.start, R.today); d++) { const k = addDays(c.last.start, d), t = clog(k).temp; if (t) pts.push({ d: d + 1, t: +t, k }); }
+    if (pts.length >= 3) {
+      let shift = null, cover = null;
+      for (let i = 6; i + 2 < pts.length; i++) {
+        const base = Math.max(...pts.slice(i - 6, i).map(p => p.t));
+        if (pts[i].t >= base + 0.2 && pts[i + 1].t > base && pts[i + 2].t > base) { shift = pts[i - 1]; cover = base + 0.05; break; }
+      }
+      bbt = { pts, shift, cover, min: Math.min(...pts.map(p => p.t)) - 0.15, max: Math.max(...pts.map(p => p.t)) + 0.15 };
+    }
+  }
+
+  // gentle health notes (not a diagnosis)
+  const flags = [];
+  const allLens = c.lens.slice(-6);
+  if (allLens.length >= 3 && avg(allLens) < 21) flags.push('Your cycles average ' + Math.round(avg(allLens)) + ' days, shorter than the typical 21–35. Worth mentioning to a doctor.');
+  if (allLens.length >= 3 && avg(allLens) > 35) flags.push('Your cycles average ' + Math.round(avg(allLens)) + ' days, longer than the typical 21–35. Worth mentioning to a doctor.');
+  if (allLens.length >= 3 && dev > 7) flags.push('Cycle length varies by more than a week. Stress, sleep and weight changes can cause this; if it continues, check with a doctor.');
+  const plens = cycles.map(x => x.plen).filter(Boolean).slice(-3);
+  if (plens.length >= 2 && avg(plens) > 7) flags.push('Periods lasting longer than 7 days are worth discussing with a doctor.');
+  if (c.has) {
+    let heavy = 0;
+    for (let d = 0; d < 10; d++) if (clog(addDays(c.last.start, d)).flow === 4) heavy++;
+    if (heavy >= 3) flags.push('Several heavy days this period. If you soak through a pad every hour or feel dizzy or weak, see a doctor.');
+    if (c.toNext <= -7) flags.push('Your period is ' + -c.toNext + ' days late. If pregnancy is possible, consider taking a test.');
+    const pos = Object.entries(S.cycleLog).find(([k, e]) => k >= c.last.start && e.preg === 'pos');
+    if (pos) flags.unshift('You logged a positive pregnancy test on ' + gLabel(pos[0]) + '. Predictions may not apply now; a doctor can confirm and guide you. 💗');
+  }
+  return { regularity, margin, cycles, preds, symptoms, moods, bbt, flags, nCycles, shortest: c.lens.length ? Math.min(...c.lens) : null, longest: c.lens.length ? Math.max(...c.lens) : null };
+});
+
 
 /* ================= reminders ================= */
 // One plan, two deliverers. The plan is derived purely from app data; Android arms it as exact
@@ -527,6 +819,23 @@ const plan = computed(() => {
     const nm = S.settings.cycle.name.trim(), who = nm ? nm + '\'s' : 'Your';
     out.push({ id: 'cycle:2:' + c.next, at: at(addDays(c.next, -2), 10), ch: 'cycle', title: '💗 Heads up', body: who + ' period is expected in 2 days', go: 'cycle' });
     out.push({ id: 'cycle:0:' + c.next, at: at(c.next, 9), ch: 'cycle', title: '🌸 Period expected today', body: nm ? who + ' period may start today. Be extra kind 💗' : 'Your period may start today. Take it easy 💗', go: 'cycle' });
+  }
+  const cs = S.settings.cycle;
+  if (c.has && cs.fertileNotify) {
+    const at = (k, h) => { const d = parseKey(k); d.setHours(h, 0, 0, 0); return d.getTime(); };
+    const goal = cs.goal;
+    out.push({ id: 'fert:' + c.fStart, at: at(c.fStart, 9), ch: 'cycle', title: goal === 'avoid' ? '🛡️ Fertile window starts today' : '🌱 Fertile window starts today',
+      body: goal === 'avoid' ? 'Pregnancy is more likely for the next 6 days. Use protection.' : goal === 'conceive' ? 'Your best chances are over the next 6 days.' : 'The fertile window runs for about 6 days.', go: 'cycle' });
+    out.push({ id: 'ovu:' + c.ov, at: at(c.ov, 9), ch: 'cycle', title: '✨ Ovulation day (estimated)', body: goal === 'conceive' ? 'Today and yesterday are the most fertile days.' : 'Today is the estimated ovulation day.', go: 'cycle' });
+  }
+  if (cs.pill.on && /^\d\d:\d\d$/.test(cs.pill.time)) {
+    const [h, m] = cs.pill.time.split(':').map(Number);
+    for (let i = 0; i < 30; i++) {
+      const k = addDays(R.today, i);
+      if (i === 0 && (S.cycleLog[k] || {}).pill) continue;
+      const d = parseKey(k); d.setHours(h, m, 0, 0);
+      out.push({ id: 'pill:' + k, at: d.getTime(), ch: 'cycle', title: '💊 Pill reminder', body: 'Time to take your pill', go: 'cycle' });
+    }
   }
   return out.filter(r => r.at >= now).sort((a, b) => a.at - b.at);
 });
@@ -670,12 +979,17 @@ function drainNative() {
     }
   }
 }
-window.orbitResume = () => { drainNative(); refreshAndroidStatus(); };
+window.orbitResume = () => {
+  drainNative(); refreshAndroidStatus();
+  const added = smsSync();
+  if (added.length === 1) say('New transaction: ' + fmt(added[0].amount) + ' T. Add a category');
+  else if (added.length > 1) say(added.length + ' new bank transactions to review');
+};
 window.orbitGo = where => {
   const tabs = ['today', 'tasks', 'habits', 'money', 'more'];
   if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
 };
-drainNative(); refreshAndroidStatus();
+drainNative(); refreshAndroidStatus(); smsRefresh();
 
 /* ================= base components ================= */
 const Ic = {
@@ -876,7 +1190,7 @@ const TxSheet = {
     const d = reactive({});
     watch(() => ui.tx, v => {
       if (!v) return;
-      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {});
+      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {});
     });
     const isEdit = computed(() => ui.tx && ui.tx.ref);
     const cats = computed(() => (d.type === 'in' ? CATS_IN : CATS_OUT));
@@ -884,11 +1198,23 @@ const TxSheet = {
       get: () => (d.amount ? fmt(d.amount) : ''),
       set: v => { d.amount = Math.min(parseInt(toEn(v).replace(/\D/g, '') || '0', 10), 1e13); },
     });
-    watch(() => d.type, t => { if (!cats.value.some(c => c.id === d.cat)) d.cat = cats.value[0].id; });
+    watch(() => d.type, t => { if (d.cat && !cats.value.some(c => c.id === d.cat)) d.cat = d.pending ? '' : cats.value[0].id; });
     function bump(n) { d.amount = (d.amount || 0) + n; Native.vibrate(6); }
+    async function paste() {
+      const text = await readClipboard();
+      const p = text && OrbitSms.parse(text, { unit: S.settings.sms.unit });
+      if (!p) { say(text ? 'That doesn\'t look like a bank SMS' : 'Copy a bank SMS first, then tap paste'); return; }
+      d.type = p.type; d.amount = p.amount;
+      if (p.date && p.date.jy) d.date = jToKey(p.date.jy, p.date.jm, p.date.jd);
+      if (p.time) d.time = p.time;
+      d.bank = p.bank; d.card = p.card; d.balance = p.balance;
+      if (!d.cat || !cats.value.some(c => c.id === d.cat)) d.cat = cats.value[0].id;
+      Native.vibrate(12);
+      say('Filled from SMS: ' + fmt(p.amount) + ' T' + (p.bank ? ' · ' + p.bank : ''));
+    }
     function save() {
-      if (!d.amount) return;
-      const rec = { type: d.type, amount: d.amount, cat: d.cat, note: d.note.trim(), date: d.date || R.today };
+      if (!d.amount || !d.cat) return;
+      const rec = { type: d.type, amount: d.amount, cat: d.cat, note: d.note.trim(), date: d.date || R.today, time: d.time || '', pending: false, bank: d.bank || '', card: d.card || '', balance: d.balance };
       if (isEdit.value) Object.assign(ui.tx.ref, rec);
       else S.money.unshift({ id: uid(), created: Date.now(), ...rec });
       Native.vibrate(12);
@@ -899,10 +1225,12 @@ const TxSheet = {
       const i = S.money.indexOf(t); S.money.splice(i, 1);
       say('Transaction deleted', () => S.money.splice(i, 0, t));
     }
-    return { d, amt, cats, save, remove, isEdit, bump };
+    return { d, amt, cats, save, remove, isEdit, bump, paste };
   },
-  template: `<Sheet :open="!!ui.tx" :title="isEdit ? 'Edit transaction' : 'New transaction'" @close="ui.tx = null">
+  template: `<Sheet :open="!!ui.tx" :title="d.pending ? 'Add details' : isEdit ? 'Edit transaction' : 'New transaction'" @close="ui.tx = null">
     <div :style="{'--acc': d.type === 'in' ? 'var(--c-habits)' : 'var(--c-money)'}">
+      <div v-if="d.pending || d.bank" class="hint" style="margin:0 0 14px"><Ic n="message-square-text" :s="16"/><span class="grow">From {{ d.bank ? d.bank + ' ' : '' }}SMS{{ d.time ? ' at ' + d.time : '' }}{{ d.card ? ' · ' + d.card : '' }}{{ d.balance != null ? ' · balance ' + short(d.balance) : '' }}</span></div>
+      <button v-else-if="!isEdit" class="btn block sm" style="margin-bottom:14px" @click="paste"><Ic n="clipboard-paste" :s="16"/>Paste a bank SMS</button>
       <div class="seg"><button :class="{on: d.type==='out'}" @click="d.type='out'"><Ic n="arrow-up-right" :s="16"/>Expense</button>
         <button :class="{on: d.type==='in'}" @click="d.type='in'"><Ic n="arrow-down-left" :s="16"/>Income</button></div>
       <div class="amount-in">
@@ -912,7 +1240,7 @@ const TxSheet = {
       <div class="chips" style="justify-content:center;margin-top:10px">
         <button class="chip" v-for="n in [50000, 100000, 500000, 1000000]" :key="n" @click="bump(n)">+{{ short(n) }}</button>
       </div>
-      <span class="flabel">Category</span>
+      <span class="flabel">Category<span v-if="!d.cat" style="color:var(--c-mood)"> · pick one</span></span>
       <div class="cat-grid">
         <button v-for="c in cats" :key="c.id" :class="{on: d.cat === c.id}" @click="d.cat = c.id"><span class="e">{{ c.e }}</span>{{ c.l }}</button>
       </div>
@@ -922,7 +1250,7 @@ const TxSheet = {
       <DatePick v-model="d.date" :none="false" past/>
       <div class="btn-row">
         <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
-        <button class="btn primary" :disabled="!d.amount" @click="save">{{ isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
+        <button class="btn primary" :disabled="!d.amount || !d.cat" @click="save">{{ d.pending ? 'Save' : isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
       </div>
     </div>
   </Sheet>`,
@@ -1001,8 +1329,9 @@ const TodayView = {
     const mood = computed(() => S.mood[R.today]);
     const nextCd = computed(() => cdSorted.value.find(x => x.days >= 0));
     const pinned = computed(() => S.notes.filter(n => n.pinned).slice(0, 2));
-    const both = computed(() => cyc.value.has && nextCd.value);
-    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both };
+    const showCyc = computed(() => cyc.value.has && S.settings.cycle.showToday);
+    const both = computed(() => showCyc.value && nextCd.value);
+    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <header class="top">
@@ -1077,8 +1406,8 @@ const TodayView = {
       </div>
     </div>
 
-    <div class="grid2" v-if="cyc.has || nextCd">
-      <div v-if="cyc.has" class="card tile tap cycle-card" style="--c:var(--c-cycle)" :style="{gridColumn: both ? '' : '1 / -1'}" @click="go('cycle')">
+    <div class="grid2" v-if="showCyc || nextCd">
+      <div v-if="showCyc" class="card tile tap cycle-card" style="--c:var(--c-cycle)" :style="{gridColumn: both ? '' : '1 / -1'}" @click="go('cycle')">
         <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="flower-2" :s="16"/></span>{{ S.settings.cycle.name || 'Cycle' }}</div>
         <div class="big">Day {{ cyc.day }}</div>
         <div class="cap" :style="{color: cyc.pc, fontWeight: 700}">{{ cyc.phase }}</div>
@@ -1284,7 +1613,7 @@ const MoneyView = {
     const cats = computed(() => {
       const m = {};
       txs.value.filter(t => t.type === 'out').forEach(t => { m[t.cat] = (m[t.cat] || 0) + t.amount; });
-      return Object.entries(m).map(([id, v]) => ({ ...CAT[id], v, n: txs.value.filter(t => t.cat === id).length, p: spent.value ? v / spent.value : 0 })).sort((a, b) => b.v - a.v);
+      return Object.entries(m).map(([id, v]) => ({ ...catOf(id), id, v, n: txs.value.filter(t => t.cat === id).length, p: spent.value ? v / spent.value : 0 })).sort((a, b) => b.v - a.v);
     });
     const days = computed(() => {
       const by = {};
@@ -1293,11 +1622,40 @@ const MoneyView = {
     });
     const budget = computed(() => S.settings.budget);
     function del(t) { const i = S.money.indexOf(t); S.money.splice(i, 1); say('Transaction deleted', () => S.money.splice(i, 0, t)); }
-    return { ym, shift, isCur, spent, income, cats, days, budget, del };
+    const showAll = ref(false);
+    const review = computed(() => (showAll.value ? pendingTx.value : pendingTx.value.slice(0, 3)));
+    const smsOffer = computed(() => Native.has && !S.settings.sms.on && !S.settings.sms.dismissed);
+    return { ym, shift, isCur, spent, income, cats, days, budget, del, showAll, review, smsOffer };
   },
   template: `<div class="view" style="--acc:var(--c-money)">
     <header class="top"><div class="grow"><h1>Money</h1><div class="sub">Spending in Toman</div></div>
-      <button class="icon-btn" @click="go('settings')" aria-label="Budget settings"><Ic n="target" :s="19"/></button></header>
+      <button class="icon-btn" @click="go('reports')" aria-label="Reports"><Ic n="chart-pie" :s="19"/></button></header>
+
+    <div v-if="smsOffer" class="card sms-offer">
+      <div class="row" style="align-items:flex-start"><span class="bubble" style="--c:var(--c-money)"><Ic n="message-square-text" :s="19"/></span>
+        <div class="grow"><b>Add transactions from bank SMS</b><div class="s">Orbit can read your bank's SMS and create the transaction for you. You just pick a category. Messages are read on this phone only and never uploaded.</div></div></div>
+      <div class="btn-row" style="margin-top:14px"><button class="btn sm" @click="S.settings.sms.dismissed = true">Not now</button><button class="btn sm primary" :disabled="Sms.busy" @click="smsEnable">Allow SMS access</button></div>
+    </div>
+
+    <div v-if="pendingTx.length" class="card review">
+      <div class="sec"><h3><Ic n="inbox" :s="17"/>To review <span class="badge">{{ pendingTx.length }}</span></h3><span class="muted" style="font-size:12.5px;font-weight:600">from bank SMS</span></div>
+      <TransitionGroup name="list" tag="div" class="rel">
+        <div v-for="t in review" :key="t.id" class="rv">
+          <div class="rv-top tap" @click="ui.tx = {ref: t}">
+            <div class="grow"><b :class="{in: t.type === 'in'}">{{ t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }} <small>T</small></b>
+              <div class="s">{{ t.bank || 'Bank' }} · {{ rel(t.date) }} {{ t.time }}{{ t.card ? ' · ' + t.card : '' }}</div></div>
+            <button class="icon-btn plain" @click.stop="dismissTx(t)" aria-label="Not a real transaction"><Ic n="x" :s="17"/></button>
+          </div>
+          <div class="chips scroll" style="margin:8px -16px 0;padding:2px 16px">
+            <template v-if="t.type === 'out'"><button v-for="c in topCats" :key="c.id" class="chip" @click="categorize(t, c.id)">{{ c.e }} {{ c.l }}</button></template>
+            <template v-else><button v-for="c in CATS_IN" :key="c.id" class="chip" @click="categorize(t, c.id)">{{ c.e }} {{ c.l }}</button></template>
+            <button class="chip" @click="ui.tx = {ref: t}">More…</button>
+          </div>
+        </div>
+      </TransitionGroup>
+      <button v-if="pendingTx.length > 3" class="link-btn" @click="showAll = !showAll">{{ showAll ? 'Show less' : 'Show all ' + pendingTx.length }}</button>
+    </div>
+
     <div class="month-nav">
       <button @click="shift(-1)" aria-label="Previous month"><Ic n="chevron-left"/></button>
       <div style="text-align:center"><b>{{ JM[ym.m - 1] }} {{ ym.y }}</b><div class="muted" style="font-size:12px;font-weight:600">{{ isCur ? 'This month' : '' }}</div></div>
@@ -1329,8 +1687,8 @@ const MoneyView = {
         <div class="tx-day"><span>{{ rel(g.k) }} · {{ jLabel(g.k) }}</span><span v-if="g.out">−{{ short(g.out) }}</span></div>
         <TransitionGroup name="list" tag="div" class="tlist rel">
           <Swipe v-for="t in g.items" :key="t.id" @remove="del(t)" @tap="ui.tx = {ref: t}">
-            <div class="tx"><div class="e">{{ CAT[t.cat] ? CAT[t.cat].e : '✨' }}</div>
-              <div class="n">{{ CAT[t.cat] ? CAT[t.cat].l : 'Other' }}<small v-if="t.note">{{ t.note }}</small></div>
+            <div class="tx"><div class="e">{{ catOf(t.cat).e }}</div>
+              <div class="n">{{ catOf(t.cat).l }}<small v-if="t.note || t.bank">{{ t.note || t.bank + (t.time ? ' · ' + t.time : '') }}</small></div>
               <div class="v" :class="{in: t.type === 'in'}">{{ t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }}</div></div>
           </Swipe>
         </TransitionGroup>
@@ -1700,9 +2058,57 @@ const CountdownsView = {
   </div>`,
 };
 
+const CycleDaySheet = {
+  props: { day: String },
+  emits: ['close'],
+  setup(props) {
+    const e = computed(() => (props.day ? clog(props.day) : {}));
+    const info = computed(() => (props.day ? cycleDayInfo(props.day) : null));
+    const flow = computed(() => e.value.flow || (props.day && S.cycleDays.includes(props.day) ? 3 : 0));
+    const toggle = (field, id) => { const a = [...(e.value[field] || [])]; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); setClog(props.day, { [field]: a }); Native.vibrate(6); };
+    const pick = (field, id) => { setClog(props.day, { [field]: e.value[field] === id ? null : id }); Native.vibrate(6); };
+    const temp = computed({
+      get: () => (e.value.temp ? String(e.value.temp) : ''),
+      set: v => { const n = parseFloat(toEn(v).replace(',', '.')); setClog(props.day, { temp: n >= 34 && n <= 43 ? Math.round(n * 100) / 100 : null }); },
+    });
+    const note = computed({ get: () => e.value.note || '', set: v => setClog(props.day, { note: v }) });
+    return { e, info, flow, toggle, pick, temp, note, setFlow, setClog, FLOWS, SYMPTOMS, CMOODS, DISCHARGE, SEXLOG, TESTS, PHASES };
+  },
+  template: `<Sheet :open="!!day" :title="day ? (day === R.today ? 'Today' : gFull(day)) : ''" @close="$emit('close')">
+    <div v-if="day" style="--acc:var(--c-cycle)">
+      <div class="muted" style="font-size:13px;font-weight:600;margin:-4px 2px 8px">{{ jFull(day) }}<template v-if="info"> · Cycle day {{ info.day }} · {{ PHASES[info.phase].l }}</template></div>
+      <span class="flabel">Period</span>
+      <div class="flow-pick">
+        <button v-for="f in FLOWS" :key="f.v" :class="{on: flow === f.v}" @click="setFlow(day, f.v)">
+          <span class="drops"><Ic v-for="i in (f.d || 0)" :key="i" n="droplet" :s="13" :w="2.4"/><Ic v-if="!f.d" n="x" :s="13"/></span>{{ f.l }}</button>
+      </div>
+      <span class="flabel">Symptoms</span>
+      <div class="chips"><button v-for="s in SYMPTOMS" :key="s.id" class="chip" :class="{on: (e.sym || []).includes(s.id)}" @click="toggle('sym', s.id)">{{ s.e }} {{ s.l }}</button></div>
+      <span class="flabel">Mood</span>
+      <div class="chips"><button v-for="m in CMOODS" :key="m.id" class="chip" :class="{on: (e.mood || []).includes(m.id)}" @click="toggle('mood', m.id)">{{ m.e }} {{ m.l }}</button></div>
+      <span class="flabel">Discharge</span>
+      <div class="chips"><button v-for="x in DISCHARGE" :key="x.id" class="chip" :class="{on: e.dis === x.id}" @click="pick('dis', x.id)">{{ x.l }}</button></div>
+      <span class="flabel">Sex</span>
+      <div class="chips"><button v-for="x in SEXLOG" :key="x.id" class="chip" :class="{on: e.sex === x.id}" @click="pick('sex', x.id)">{{ x.l }}</button></div>
+      <div class="grid2" style="margin-top:4px">
+        <div><span class="flabel">Ovulation test</span><div class="chips"><button v-for="x in TESTS.slice(1)" :key="x.id" class="chip" :class="{on: e.ovu === x.id}" @click="pick('ovu', x.id)">{{ x.l }}</button></div></div>
+        <div><span class="flabel">Pregnancy test</span><div class="chips"><button v-for="x in TESTS.slice(1)" :key="x.id" class="chip" :class="{on: e.preg === x.id}" @click="pick('preg', x.id)">{{ x.l }}</button></div></div>
+      </div>
+      <span class="flabel">Basal temperature</span>
+      <div class="row"><input class="field" style="max-width:140px" v-model.lazy="temp" inputmode="decimal" placeholder="36.50" enterkeyhint="done"><span class="muted">°C · take it right after waking</span></div>
+      <template v-if="S.settings.cycle.pill.on">
+        <div class="list-row" style="padding:16px 2px 0;border:0"><span class="bubble" style="--c:var(--c-cycle)"><Ic n="pill" :s="18"/></span><div class="grow"><div class="t">Pill taken</div></div><Toggle :model-value="!!e.pill" @update:model-value="v => setClog(day, {pill: v || null})"/></div>
+      </template>
+      <span class="flabel">Note</span>
+      <textarea class="field" v-model.lazy="note" placeholder="Anything else worth remembering?" style="min-height:70px"></textarea>
+      <button class="btn primary block" style="margin-top:18px" @click="$emit('close')">Done</button>
+    </div>
+  </Sheet>`,
+};
+
 const CycleView = {
   setup() {
-    const cfg = ref(false);
+    const tab = ref('today'), cfg = ref(false), dayOpen = ref(null), guide = ref('food');
     const now = parseKey(R.today);
     const cm = ref({ y: now.getFullYear(), m: now.getMonth() });
     const shift = n => { let { y, m } = cm.value; m += n; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } cm.value = { y, m }; };
@@ -1717,20 +2123,63 @@ const CycleView = {
       const a = jal(keyOf(new Date(y, m, 1))), b = jal(keyOf(new Date(y, m + 1, 0)));
       return JM[a.m - 1] + ' – ' + JM[b.m - 1] + ' ' + b.y;
     });
-    const who = computed(() => S.settings.cycle.name.trim());
+    const cs = S.settings.cycle;
+    const who = computed(() => cs.name.trim());
     const startDate = ref(R.today);
     function logStart() { if (!S.cycleDays.includes(startDate.value)) S.cycleDays.push(startDate.value); Native.vibrate(14); if (Native.has) Native.askNotify(); }
-    const history = computed(() => {
-      const p = cyc.value.periods;
-      return p.map((x, i) => ({ ...x, plen: diffDays(x.start, x.end) + 1, clen: p[i + 1] ? diffDays(x.start, p[i + 1].start) : null })).reverse().slice(0, 8);
-    });
     const primary = computed(() => {
       const t = R.today;
-      if (S.cycleDays.includes(t)) return { l: 'Remove today', ghost: true };
-      if (S.cycleDays.includes(addDays(t, -1))) return { l: 'Period continues today' };
-      return { l: 'Log period started today' };
+      if (S.cycleDays.includes(t)) return { l: 'Period logged', ghost: true };
+      if (S.cycleDays.includes(addDays(t, -1))) return { l: 'Still on period' };
+      return { l: 'Log period' };
     });
-    return { cfg, cm, shift, cells, jRange, who, startDate, logStart, history, primary, WK, MONTHS };
+    function periodToday() {
+      if (S.cycleDays.includes(R.today)) { dayOpen.value = R.today; return; }
+      setFlow(R.today, 3);
+    }
+    function tapDay(c) {
+      if (c.k <= R.today) { dayOpen.value = c.k; return; }
+      const t = cyc.value.map[c.k];
+      say(t === 'pp' ? 'Predicted period' : t === 'ov' ? 'Estimated ovulation · peak fertility' : t === 'f' ? 'Fertile window · ' + chanceOn(c.k).l.toLowerCase() + ' chance' : gFull(c.k));
+    }
+    const pk = computed(() => (cyc.value.has ? phaseKey(cyc.value.phase) : 'follicular'));
+    const g = computed(() => PHASE_GUIDE[pk.value]);
+    const chance = computed(() => (cyc.value.has ? chanceOn(R.today) : null));
+    const goalLine = computed(() => {
+      const ch = chance.value; if (!ch || cs.goal === 'track') return '';
+      if (cs.goal === 'conceive') return ch.v >= 2 ? '🌱 ' + ch.l + ' chance of conceiving today' : ch.v === 1 ? 'Medium chance today. Your best days are coming' : 'Low chance today';
+      return ch.v >= 1 ? '🛡️ ' + ch.l + ' chance of pregnancy today. Use protection' : 'Lower chance today, but no day is 100% safe';
+    });
+    const todayLog = computed(() => clog(R.today));
+    const todaySummary = computed(() => {
+      const e = todayLog.value, out = [];
+      if (e.flow) out.push(FLOWS[e.flow].l + (e.flow >= 2 ? ' flow' : ''));
+      (e.sym || []).forEach(id => { const s = SYMPTOMS.find(x => x.id === id); if (s) out.push(s.e + ' ' + s.l); });
+      (e.mood || []).forEach(id => { const m = CMOODS.find(x => x.id === id); if (m) out.push(m.e + ' ' + m.l); });
+      if (e.temp) out.push('🌡️ ' + e.temp + '°');
+      return out;
+    });
+    const upcoming = computed(() => {
+      const c = cyc.value; if (!c.has) return [];
+      const st = cycStats.value, list = [];
+      const p0 = st.preds[0];
+      if (c.toNext >= 0) list.push({ i: 'droplet', c: 'var(--c-cycle)', t: 'Next period', s: gFull(c.next) + ' · ' + jLabel(c.next) + (st.margin ? ' (±' + st.margin + 'd)' : ''), d: c.toNext });
+      if (c.fStart > R.today) list.push({ i: 'sparkles', c: '#14b8a6', t: 'Fertile window', s: gLabel(c.fStart) + ' – ' + gLabel(c.fEnd), d: diffDays(R.today, c.fStart) });
+      else if (c.fEnd >= R.today) list.push({ i: 'sparkles', c: '#14b8a6', t: 'Fertile window ends', s: gFull(c.fEnd), d: diffDays(R.today, c.fEnd) });
+      if (c.ov > R.today) list.push({ i: 'target', c: '#14b8a6', t: 'Ovulation (estimated)', s: gFull(c.ov), d: diffDays(R.today, c.ov) });
+      st.preds.slice(1).forEach(p => list.push({ i: 'calendar', c: 'var(--muted)', t: 'Period', s: gFull(p.start) + ' · ' + jLabel(p.start), d: diffDays(R.today, p.start) }));
+      return list.sort((a, b) => a.d - b.d);
+    });
+    const maxLen = computed(() => Math.max(35, ...cycStats.value.cycles.map(x => x.clen || 0)));
+    const bbtPath = computed(() => {
+      const b = cycStats.value.bbt; if (!b) return null;
+      const W = 300, H = 120, maxD = Math.max(cyc.value.len, ...b.pts.map(p => p.d));
+      const x = d => (d - 1) / Math.max(1, maxD - 1) * W, y = t => H - (t - b.min) / (b.max - b.min) * H;
+      return { W, H, line: b.pts.map((p, i) => (i ? 'L' : 'M') + x(p.d).toFixed(1) + ' ' + y(p.t).toFixed(1)).join(' '), dots: b.pts.map(p => ({ x: x(p.d), y: y(p.t) })),
+        cover: b.cover ? y(b.cover) : null, shiftX: b.shift ? x(b.shift.d) : null };
+    });
+    const history = computed(() => [...cycStats.value.cycles].reverse().slice(0, 10));
+    return { tab, cfg, dayOpen, guide, cm, shift, cells, jRange, who, startDate, logStart, primary, periodToday, tapDay, pk, g, chance, goalLine, todaySummary, upcoming, maxLen, bbtPath, history, cs, WK, MONTHS, PHASES, GOALS, SYMPTOMS };
   },
   template: `<div class="view" style="--acc:var(--c-cycle)">
     <Head title="Cycle" :sub="who ? 'Tracking for ' + who + ' 💗' : 'Your period & fertility tracker'"><button class="icon-btn" @click="cfg = true" aria-label="Cycle settings"><Ic n="settings" :s="19"/></button></Head>
@@ -1739,9 +2188,11 @@ const CycleView = {
       <div class="card" style="text-align:center;padding:28px 20px">
         <div style="font-size:48px">🌸</div>
         <h2 style="font-size:20px;font-weight:750;margin-top:8px">Let's set things up</h2>
-        <p class="muted" style="margin-top:6px">When did {{ who ? who + '\\'s' : 'the' }} last period start? Predictions get smarter with every cycle you log.</p>
+        <p class="muted" style="margin-top:6px">When did {{ who ? who + '\\'s' : 'your' }} last period start? Predictions get smarter with every cycle you log.</p>
+        <span class="flabel" style="text-align:left">What's the goal?</span>
+        <div class="goal-pick"><button v-for="x in GOALS" :key="x.id" :class="{on: cs.goal === x.id}" @click="cs.goal = x.id"><span>{{ x.e }}</span><b>{{ x.l }}</b></button></div>
         <span class="flabel" style="text-align:left">Name (optional)</span>
-        <input class="field" v-model="S.settings.cycle.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
+        <input class="field" v-model="cs.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
         <span class="flabel" style="text-align:left">Last period started</span>
         <label class="field row" style="position:relative;text-align:left"><Ic n="calendar" :s="18" class="muted"/><span class="grow">{{ gFull(startDate) }}</span><span class="muted" style="font-size:13px">{{ jFull(startDate) }}</span>
           <input type="date" class="overlay-input" v-model="startDate" :max="R.today"></label>
@@ -1750,71 +2201,178 @@ const CycleView = {
     </template>
 
     <template v-else>
-      <div class="card cyc-hero" :style="{'--pc': cyc.pc}">
-        <div style="display:flex;justify-content:center">
-          <Ring :v="Math.min(1, cyc.day / cyc.len)" :size="200" :sw="13" :c="cyc.pc">
-            <div><div class="day">Day</div><div class="num">{{ cyc.day }}</div><span class="ph"><span class="dot" :style="{background: cyc.pc}"></span>{{ cyc.phase }}</span></div>
-          </Ring>
-        </div>
-        <div class="msg">{{ cyc.toNext > 1 ? 'Next period in ' + cyc.toNext + ' days' : cyc.toNext === 1 ? 'Period expected tomorrow' : cyc.toNext === 0 ? 'Period expected today' : 'Period is ' + -cyc.toNext + ' day' + (cyc.toNext === -1 ? '' : 's') + ' late' }}</div>
-        <div class="msg2">{{ gFull(cyc.next) }} · {{ jFull(cyc.next) }}</div>
-        <div class="msg2" style="margin-top:12px;color:var(--text-2)">{{ cyc.tip }}</div>
-        <button class="btn block" :class="primary.ghost ? '' : 'primary'" style="margin-top:18px" @click="togglePeriodDay(R.today)"><Ic :n="primary.ghost ? 'x' : 'droplet'" :s="18"/>{{ primary.l }}</button>
-      </div>
+      <div class="seg"><button :class="{on: tab === 'today'}" @click="tab = 'today'">Today</button><button :class="{on: tab === 'calendar'}" @click="tab = 'calendar'">Calendar</button><button :class="{on: tab === 'insights'}" @click="tab = 'insights'">Insights</button></div>
 
-      <div class="grid2">
-        <div class="card"><div class="muted" style="font-size:12.5px;font-weight:600">Fertile window</div><div style="font-weight:750;margin-top:4px">{{ gLabel(cyc.fStart) }} – {{ gLabel(cyc.fEnd) }}</div><div class="muted" style="font-size:12px;margin-top:2px">{{ jLabel(cyc.fStart) }} – {{ jLabel(cyc.fEnd) }}</div></div>
-        <div class="card"><div class="muted" style="font-size:12.5px;font-weight:600">Ovulation</div><div style="font-weight:750;margin-top:4px">{{ gFull(cyc.ov).split(', ')[1] }}</div><div class="muted" style="font-size:12px;margin-top:2px">{{ jLabel(cyc.ov) }} · {{ WDL[parseKey(cyc.ov).getDay()] }}</div></div>
-      </div>
+      <Transition name="fade" mode="out-in"><div :key="tab" style="margin-top:12px">
 
-      <div class="card" style="margin-top:12px">
-        <div class="cal-head">
-          <button class="icon-btn plain" @click="shift(-1)" aria-label="Previous month"><Ic n="chevron-left"/></button>
-          <div style="text-align:center"><b>{{ MONTHS[cm.m] }} {{ cm.y }}</b><small>{{ jRange }}</small></div>
-          <button class="icon-btn plain" @click="shift(1)" aria-label="Next month"><Ic n="chevron-right"/></button>
+      <template v-if="tab === 'today'">
+        <div class="card cyc-hero" :style="{'--pc': cyc.pc}">
+          <div style="display:flex;justify-content:center">
+            <Ring :v="Math.min(1, cyc.day / cyc.len)" :size="196" :sw="13" :c="cyc.pc">
+              <div><div class="day">Day</div><div class="num">{{ cyc.day }}</div><span class="ph"><span class="dot" :style="{background: cyc.pc}"></span>{{ cyc.phase }}</span></div>
+            </Ring>
+          </div>
+          <div class="msg">{{ cyc.toNext > 1 ? 'Next period in ' + cyc.toNext + ' days' : cyc.toNext === 1 ? 'Period expected tomorrow' : cyc.toNext === 0 ? 'Period expected today' : 'Period is ' + -cyc.toNext + ' day' + (cyc.toNext === -1 ? '' : 's') + ' late' }}</div>
+          <div class="msg2">{{ gFull(cyc.next) }} · {{ jFull(cyc.next) }}</div>
+          <div v-if="goalLine" class="goal-line" :class="cs.goal">{{ goalLine }}</div>
+          <div class="msg2" v-else style="margin-top:12px;color:var(--text-2)">{{ cyc.tip }}</div>
+          <div class="btn-row" style="margin-top:16px">
+            <button class="btn" :class="primary.ghost ? '' : 'primary'" @click="periodToday"><Ic n="droplet" :s="17"/>{{ primary.l }}</button>
+            <button class="btn" @click="dayOpen = R.today"><Ic n="plus" :s="17"/>Log</button>
+          </div>
         </div>
-        <div class="cal">
-          <div v-for="w in WK" :key="w" class="wd">{{ w }}</div>
-          <button v-for="c in cells" :key="c.k" :class="[cyc.map[c.k], {out: c.out, td: c.k === R.today, 'fut-dis': c.k > R.today}]" @click="togglePeriodDay(c.k)">{{ c.d }}<small>{{ c.j }}</small></button>
-        </div>
-        <div class="legend">
-          <span><i style="background:var(--c-cycle)"></i>Period</span>
-          <span><i style="border:2px dashed var(--c-cycle)"></i>Predicted</span>
-          <span><i style="background:color-mix(in srgb,#2dd4bf 30%,transparent)"></i>Fertile</span>
-          <span><i style="background:#14b8a6"></i>Ovulation</span>
-        </div>
-        <p class="muted" style="font-size:12.5px;margin-top:10px">Tap a past day to mark or unmark a period day.</p>
-      </div>
 
-      <div class="card">
-        <div class="sec"><h3>Insights</h3></div>
-        <div class="stat-row">
-          <div class="stat"><b>{{ cyc.len }}d</b><span>Avg cycle</span></div>
-          <div class="stat"><b>{{ cyc.plen }}d</b><span>Avg period</span></div>
-          <div class="stat"><b>{{ cyc.periods.length }}</b><span>Logged</span></div>
+        <div class="card tap" @click="dayOpen = R.today">
+          <div class="sec" style="margin-bottom:8px"><h3>Today's log</h3><span class="link">{{ todaySummary.length ? 'Edit' : 'Add' }} <Ic n="chevron-right" :s="16"/></span></div>
+          <div v-if="todaySummary.length" class="chips"><span v-for="x in todaySummary" :key="x" class="chip on" style="height:32px">{{ x }}</span></div>
+          <div v-else class="muted" style="font-size:14px">How are you feeling? Log symptoms, mood, discharge and more.</div>
         </div>
-        <template v-if="history.length">
-          <span class="flabel">History</span>
+
+        <div v-if="cs.pill.on" class="card row">
+          <span class="bubble" style="--c:var(--c-cycle)"><Ic n="pill" :s="19"/></span>
+          <div class="grow"><div style="font-weight:650">Pill today</div><div class="muted" style="font-size:13px">Reminder at {{ cs.pill.time }}</div></div>
+          <button class="h-check" :class="{on: clog(R.today).pill}" :style="{'--c': 'var(--c-cycle)'}" @click="setClog(R.today, {pill: clog(R.today).pill ? null : true}); Native.vibrate(12)"><Ic n="check" :s="20" :w="2.8"/></button>
+        </div>
+
+        <div class="card phase-card" :style="{'--pc': PHASES[pk].c}">
+          <div class="row"><span class="ph-e">{{ PHASES[pk].e }}</span><div class="grow"><b>{{ PHASES[pk].l }}{{ ['follicular', 'luteal'].includes(pk) ? ' phase' : '' }}</b><div class="s">{{ g.desc }}</div></div></div>
+          <div class="seg" style="margin-top:14px">
+            <template v-if="!who"><button :class="{on: guide === 'food'}" @click="guide = 'food'"><Ic n="utensils" :s="15"/>Eat</button><button :class="{on: guide === 'move'}" @click="guide = 'move'"><Ic n="dumbbell" :s="15"/>Move</button><button :class="{on: guide === 'care'}" @click="guide = 'care'"><Ic n="heart" :s="15"/>Care</button></template>
+            <template v-else><button :class="{on: guide !== 'care'}" @click="guide = 'food'"><Ic n="heart-handshake" :s="15"/>How to support {{ who }}</button><button :class="{on: guide === 'care'}" @click="guide = 'care'"><Ic n="lightbulb" :s="15"/>What she may feel</button></template>
+          </div>
+          <ul class="tips"><li v-for="x in (who ? (guide === 'care' ? g.care.concat(g.food.slice(0, 1)) : g.partner) : g[guide])" :key="x">{{ x }}</li></ul>
+        </div>
+
+        <div class="label">Coming up</div>
+        <div class="settings-group">
+          <div v-for="u in upcoming" :key="u.t + u.s" class="list-row">
+            <span class="bubble" :style="{'--c': u.c}"><Ic :n="u.i" :s="17"/></span>
+            <div class="grow"><div class="t">{{ u.t }}</div><div class="s">{{ u.s }}</div></div>
+            <span class="badge">{{ u.d === 0 ? 'Today' : 'in ' + u.d + 'd' }}</span>
+          </div>
+        </div>
+        <template v-if="cycStats.flags.length">
+          <div class="label">Health notes</div>
+          <div class="card flags"><div v-for="f in cycStats.flags" :key="f" class="insight"><span>🩺</span>{{ f }}</div></div>
+        </template>
+      </template>
+
+      <template v-else-if="tab === 'calendar'">
+        <div class="card">
+          <div class="cal-head">
+            <button class="icon-btn plain" @click="shift(-1)" aria-label="Previous month"><Ic n="chevron-left"/></button>
+            <div style="text-align:center"><b>{{ MONTHS[cm.m] }} {{ cm.y }}</b><small>{{ jRange }}</small></div>
+            <button class="icon-btn plain" @click="shift(1)" aria-label="Next month"><Ic n="chevron-right"/></button>
+          </div>
+          <div class="cal">
+            <div v-for="w in WK" :key="w" class="wd">{{ w }}</div>
+            <button v-for="c in cells" :key="c.k" :class="[cyc.map[c.k], {out: c.out, td: c.k === R.today, lg: S.cycleLog[c.k] && (S.cycleLog[c.k].sym || S.cycleLog[c.k].mood || S.cycleLog[c.k].temp || S.cycleLog[c.k].sex || S.cycleLog[c.k].note)}]" @click="tapDay(c)">{{ c.d }}<small>{{ c.j }}</small></button>
+          </div>
+          <div class="legend">
+            <span><i style="background:var(--c-cycle)"></i>Period</span>
+            <span><i style="border:2px dashed var(--c-cycle)"></i>Predicted</span>
+            <span><i style="background:color-mix(in srgb,#2dd4bf 30%,transparent)"></i>Fertile</span>
+            <span><i style="background:#14b8a6"></i>Ovulation</span>
+            <span><i style="background:var(--c-mood);width:6px;height:6px;margin:3px"></i>Logged</span>
+          </div>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">Tap a day to log period, symptoms and more. Future days show predictions.</p>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="kpis">
+          <div class="kpi"><small>Average cycle</small><b>{{ cyc.len }} days</b><span class="muted">{{ cycStats.shortest ? cycStats.shortest + '–' + cycStats.longest + ' days' : 'from your settings' }}</span></div>
+          <div class="kpi"><small>Average period</small><b>{{ cyc.plen }} days</b><span class="muted">{{ cycStats.cycles.filter(c => c.plen).length }} logged</span></div>
+          <div class="kpi"><small>Regularity</small><b style="font-size:19px">{{ cycStats.regularity.l }}</b><span class="muted">{{ cycStats.regularity.s }}</span></div>
+          <div class="kpi"><small>Cycles tracked</small><b>{{ cyc.periods.length }}</b><span class="muted">predictions ±{{ cycStats.margin }} days</span></div>
+        </div>
+
+        <div class="card" v-if="cycStats.cycles.some(c => c.clen)">
+          <div class="sec"><h3>Cycle history</h3><span class="muted" style="font-size:12.5px;font-weight:600">avg {{ cyc.len }}d</span></div>
+          <div v-for="c in history.filter(x => x.clen)" :key="c.start" class="cyc-bar">
+            <small>{{ gLabel(c.start) }}</small>
+            <div class="track"><i class="p" :style="{width: ((c.plen || cyc.plen) / maxLen * 100) + '%'}"></i><i class="r" :style="{width: ((c.clen - (c.plen || cyc.plen)) / maxLen * 100) + '%'}"></i>
+              <em :style="{left: (cyc.len / maxLen * 100) + '%'}"></em></div>
+            <b>{{ c.clen }}</b>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="sec"><h3>Symptom patterns</h3></div>
+          <template v-if="cycStats.symptoms.length">
+            <div v-for="s in cycStats.symptoms" :key="s.id" class="sym-row">
+              <span class="e">{{ s.e }}</span>
+              <div class="grow"><div class="t">{{ s.l }}</div><div class="s">In {{ s.cycles }} of {{ s.of }} cycle{{ s.of > 1 ? 's' : '' }} · mostly {{ PHASES[s.phase].l.toLowerCase() }}</div>
+                <div class="bar" style="margin-top:6px;height:6px" :style="{'--c': PHASES[s.phase].c}"><i :style="{width: (s.cycles / s.of * 100) + '%'}"></i></div></div>
+            </div>
+          </template>
+          <div v-else class="muted" style="font-size:14px">Log symptoms for a cycle or two and patterns will show up here.</div>
+        </div>
+
+        <div v-if="cycStats.moods.length" class="card">
+          <div class="sec"><h3>Mood by phase</h3></div>
+          <div v-for="m in cycStats.moods" :key="m.ph" class="list-row">
+            <span class="bubble" :style="{'--c': PHASES[m.ph].c}">{{ PHASES[m.ph].e }}</span>
+            <div class="grow"><div class="t">{{ PHASES[m.ph].l }}</div></div>
+            <span class="mood-tops">{{ m.top.map(x => x.e).join(' ') }}</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="sec"><h3><Ic n="thermometer" :s="17"/>Basal temperature</h3><span v-if="cycStats.bbt && cycStats.bbt.shift" class="badge" style="color:#14b8a6">Ovulation detected</span></div>
+          <template v-if="bbtPath">
+            <svg class="bbt" :viewBox="'-6 -8 ' + (bbtPath.W + 12) + ' ' + (bbtPath.H + 16)">
+              <line v-if="bbtPath.cover != null" x1="0" :x2="bbtPath.W" :y1="bbtPath.cover" :y2="bbtPath.cover" class="cover"/>
+              <line v-if="bbtPath.shiftX != null" :x1="bbtPath.shiftX" :x2="bbtPath.shiftX" y1="0" :y2="bbtPath.H" class="shift"/>
+              <path :d="bbtPath.line" class="ln"/>
+              <circle v-for="(d, i) in bbtPath.dots" :key="i" :cx="d.x" :cy="d.y" r="3.5" class="pt"/>
+            </svg>
+            <div class="muted" style="font-size:12px;margin-top:6px">{{ cycStats.bbt.shift ? 'A sustained rise after day ' + cycStats.bbt.shift.d + ' suggests ovulation happened.' : 'Log your temperature each morning. A rise of about 0.2°C for 3 days suggests ovulation.' }}</div>
+          </template>
+          <div v-else class="muted" style="font-size:14px">Log your temperature right after waking. After a few days you'll see a chart here, and Orbit can spot the rise that follows ovulation.</div>
+        </div>
+
+        <div class="card">
+          <div class="sec"><h3>History</h3></div>
           <div v-for="h in history" :key="h.start" class="list-row">
             <span class="bubble" style="--c:var(--c-cycle)"><Ic n="droplet" :s="17"/></span>
-            <div class="grow"><div class="t">{{ gLabel(h.start) }} · {{ jLabel(h.start) }}</div><div class="s">{{ h.plen > 1 ? h.plen + ' day period' : 'Start logged' }}</div></div>
+            <div class="grow"><div class="t">{{ gLabel(h.start) }} · {{ jLabel(h.start) }}</div><div class="s">{{ h.plen ? h.plen + ' day period' : 'Start logged' }}</div></div>
             <span v-if="h.clen" class="badge">{{ h.clen }}d cycle</span><span v-else class="badge" style="color:var(--c-cycle)">Current</span>
           </div>
+        </div>
+        <template v-if="cycStats.flags.length">
+          <div class="label">Health notes</div>
+          <div class="card flags"><div v-for="f in cycStats.flags" :key="f" class="insight"><span>🩺</span>{{ f }}</div></div>
         </template>
-      </div>
-      <p class="muted" style="font-size:12px;text-align:center;margin:18px 10px 0">Predictions are estimates based on logged cycles. Not for contraception or medical use.</p>
+      </template>
+      </div></Transition>
+      <p class="muted" style="font-size:12px;text-align:center;margin:18px 10px 0">Predictions are estimates based on your logged cycles. They are not medical advice and not a reliable method of contraception.</p>
     </template>
+
+    <CycleDaySheet :day="dayOpen" @close="dayOpen = null"/>
 
     <Sheet :open="cfg" title="Cycle settings" @close="cfg = false">
       <div style="--acc:var(--c-cycle)">
-        <span class="flabel" style="margin-top:4px">Name</span>
-        <input class="field" v-model="S.settings.cycle.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
+        <span class="flabel" style="margin-top:4px">Goal</span>
+        <div class="goal-pick"><button v-for="x in GOALS" :key="x.id" :class="{on: cs.goal === x.id}" @click="cs.goal = x.id"><span>{{ x.e }}</span><b>{{ x.l }}</b><small>{{ x.s }}</small></button></div>
+        <span class="flabel">Name</span>
+        <input class="field" v-model="cs.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
         <div class="settings-group" style="box-shadow:none;margin-top:16px">
-          <div class="list-row"><div class="grow"><div class="t">Typical cycle length</div><div class="s">Used until 2+ cycles are logged</div></div><Stepper v-model="S.settings.cycle.len" :min="20" :max="45" unit="d"/></div>
-          <div class="list-row"><div class="grow"><div class="t">Typical period length</div></div><Stepper v-model="S.settings.cycle.plen" :min="2" :max="10" unit="d"/></div>
-          <div class="list-row" v-if="remPossible"><div class="grow"><div class="t">Reminders</div><div class="s">2 days before & on the expected day</div></div><Toggle v-model="S.settings.cycle.notify"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Typical cycle length</div><div class="s">Used until 2+ cycles are logged</div></div><Stepper v-model="cs.len" :min="20" :max="45" unit="d"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Typical period length</div></div><Stepper v-model="cs.plen" :min="2" :max="10" unit="d"/></div>
         </div>
-        <button v-if="S.cycleDays.length" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); cfg = false; say('Cycle data cleared')">Clear all cycle data</button>
+        <div class="label">Reminders</div>
+        <div class="settings-group" style="box-shadow:none">
+          <div class="list-row"><div class="grow"><div class="t">Period coming</div><div class="s">2 days before and on the expected day</div></div><Toggle v-model="cs.notify"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Fertile window & ovulation</div><div class="s">When the fertile window starts and on ovulation day</div></div><Toggle v-model="cs.fertileNotify"/></div>
+          <div class="list-row"><div class="grow"><div class="t">Daily pill reminder</div><div class="s">{{ cs.pill.on ? 'Every day at ' + cs.pill.time : 'Off' }}</div></div><Toggle v-model="cs.pill.on"/></div>
+          <div v-if="cs.pill.on" class="list-row"><div class="grow"><div class="t">Pill time</div></div><label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ cs.pill.time }}<input type="time" v-model="cs.pill.time"></label></div>
+        </div>
+        <div class="label">Privacy</div>
+        <div class="settings-group" style="box-shadow:none">
+          <div class="list-row"><div class="grow"><div class="t">Show on Today screen</div><div class="s">Turn off to keep cycle info out of sight</div></div><Toggle v-model="cs.showToday"/></div>
+        </div>
+        <button v-if="S.cycleDays.length || Object.keys(S.cycleLog).length" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); S.cycleLog = {}; cfg = false; say('Cycle data cleared')">Clear all cycle data</button>
       </div>
     </Sheet>
   </div>`,
@@ -1933,6 +2491,236 @@ const NotificationsView = {
   </div>`,
 };
 
+/* ---------- charts ---------- */
+const Bars = {
+  props: { items: Array, h: { default: 130 }, c: { default: 'var(--c-money)' }, avg: Number, fmtv: Function },
+  computed: { max() { return Math.max(1, ...this.items.map(i => Math.max(i.v || 0, i.v2 || 0)), this.avg || 0); } },
+  template: `<div class="bars" :style="{height: h + 'px'}">
+    <div v-if="avg" class="bars-avg" :style="{bottom: (avg / max * (h - 34) + 20) + 'px'}"><span>avg {{ fmtv ? fmtv(avg) : avg }}</span></div>
+    <div v-for="(it, i) in items" :key="i" class="bar-col" :class="{hl: it.hl}">
+      <span class="bv">{{ it.v && it.show ? (fmtv ? fmtv(it.v) : it.v) : '' }}</span>
+      <div class="bar-pair">
+        <i v-if="it.v2 != null" class="b2" :style="{height: (it.v2 / max * (h - 34)) + 'px'}"></i>
+        <i :style="{height: Math.max(it.v ? 3 : 0, it.v / max * (h - 34)) + 'px', background: it.c || c}"></i>
+      </div>
+      <small>{{ it.l }}</small>
+    </div>
+  </div>`,
+};
+const Donut = {
+  props: { parts: Array, size: { default: 150 }, sw: { default: 20 } },
+  computed: {
+    r() { return (this.size - this.sw) / 2; },
+    C() { return 2 * Math.PI * this.r; },
+    segs() {
+      const tot = this.parts.reduce((s, p) => s + p.v, 0) || 1; let acc = 0;
+      return this.parts.map(p => { const len = p.v / tot * this.C; const seg = { c: p.c, len: Math.max(0, len - 2), off: -acc }; acc += len; return seg; });
+    },
+  },
+  template: `<div class="ring" :style="{width: size + 'px', height: size + 'px'}">
+    <svg :width="size" :height="size" :viewBox="'0 0 ' + size + ' ' + size" :style="{transform: 'rotate(-90deg)'}">
+      <circle :cx="size/2" :cy="size/2" :r="r" fill="none" :stroke-width="sw" class="ring-track"/>
+      <circle v-for="(s, i) in segs" :key="i" :cx="size/2" :cy="size/2" :r="r" fill="none" :stroke="s.c" :stroke-width="sw"
+        :stroke-dasharray="s.len + ' ' + C" :stroke-dashoffset="s.off" class="ring-bar"/>
+    </svg>
+    <div class="ring-in"><slot/></div>
+  </div>`,
+};
+
+const ReportsView = {
+  setup() {
+    const mode = ref('month');
+    const ym = ref({ y: curJ.value.y, m: curJ.value.m });
+    const shift = n => { ym.value = mode.value === 'month' ? jShift(ym.value.y, ym.value.m, n) : { y: ym.value.y + n, m: ym.value.m }; };
+    const isCur = computed(() => (mode.value === 'month' ? ym.value.y === curJ.value.y && ym.value.m === curJ.value.m : ym.value.y === curJ.value.y));
+    const inPeriod = (t, y, m) => { const j = jal(t.date); return j.y === y && (mode.value === 'year' || j.m === m); };
+    const txs = computed(() => S.money.filter(t => inPeriod(t, ym.value.y, ym.value.m)));
+    const prevYm = computed(() => (mode.value === 'month' ? jShift(ym.value.y, ym.value.m, -1) : { y: ym.value.y - 1, m: 1 }));
+    const prevTx = computed(() => S.money.filter(t => inPeriod(t, prevYm.value.y, prevYm.value.m)));
+    const sum = (list, type) => list.filter(t => t.type === type).reduce((s, t) => s + t.amount, 0);
+    const out = computed(() => txs.value.filter(t => t.type === 'out'));
+    const spent = computed(() => sum(txs.value, 'out'));
+    const income = computed(() => sum(txs.value, 'in'));
+    const prevSpent = computed(() => sum(prevTx.value, 'out'));
+    const change = computed(() => (prevSpent.value ? (spent.value - prevSpent.value) / prevSpent.value : null));
+    const keys = computed(() => (mode.value === 'month' ? jMonthKeys(ym.value.y, ym.value.m) : null));
+    const daysElapsed = computed(() => {
+      if (mode.value === 'month') { const k = keys.value; if (!isCur.value) return k.length; return Math.max(1, k.indexOf(R.today) + 1); }
+      const first = jToKey(ym.value.y, 1, 1);
+      return isCur.value ? diffDays(first, R.today) + 1 : diffDays(first, jToKey(ym.value.y + 1, 1, 1));
+    });
+    const perDay = computed(() => spent.value / daysElapsed.value);
+    const savedRate = computed(() => (income.value ? (income.value - spent.value) / income.value : null));
+
+    // budget pace (current month only)
+    const pace = computed(() => {
+      const b = S.settings.budget;
+      if (mode.value !== 'month' || !b || !isCur.value) return null;
+      const total = keys.value.length, proj = perDay.value * total;
+      return { b, proj, over: proj - b, safe: Math.max(0, (b - spent.value) / Math.max(1, total - daysElapsed.value + 1)), pct: spent.value / b, timePct: daysElapsed.value / total };
+    });
+
+    const trend = computed(() => {
+      if (mode.value === 'month') {
+        return keys.value.map((k, i) => {
+          const v = out.value.filter(t => t.date === k).reduce((s, t) => s + t.amount, 0);
+          return { l: (i + 1) % 5 === 0 || i === 0 ? String(i + 1) : '', v, hl: k === R.today };
+        });
+      }
+      return Array.from({ length: 12 }, (_, i) => {
+        const v = out.value.filter(t => jal(t.date).m === i + 1).reduce((s, t) => s + t.amount, 0);
+        return { l: JM[i].slice(0, 3), v, hl: isCur.value && i + 1 === curJ.value.m, show: true };
+      });
+    });
+    const months6 = computed(() => Array.from({ length: 6 }, (_, i) => {
+      const { y, m } = jShift(ym.value.y, mode.value === 'month' ? ym.value.m : 12, i - 5);
+      const list = S.money.filter(t => { const j = jal(t.date); return j.y === y && j.m === m; });
+      return { l: JM[m - 1].slice(0, 3), v: sum(list, 'out'), v2: sum(list, 'in'), hl: y === ym.value.y && m === ym.value.m };
+    }));
+
+    const cats = computed(() => {
+      const cur = {}, prev = {};
+      out.value.forEach(t => { cur[t.cat] = (cur[t.cat] || 0) + t.amount; });
+      prevTx.value.filter(t => t.type === 'out').forEach(t => { prev[t.cat] = (prev[t.cat] || 0) + t.amount; });
+      return Object.entries(cur).map(([id, v]) => ({ ...catOf(id), id, v, p: spent.value ? v / spent.value : 0, n: out.value.filter(t => t.cat === id).length,
+        ch: prev[id] ? (v - prev[id]) / prev[id] : null })).sort((a, b) => b.v - a.v);
+    });
+    const weekday = computed(() => {
+      const order = [6, 0, 1, 2, 3, 4, 5], tot = {}, cnt = {};
+      // average per weekday: total spent on that weekday / how many of those weekdays passed in the period
+      const ks = mode.value === 'month' ? keys.value.slice(0, daysElapsed.value) : Array.from({ length: daysElapsed.value }, (_, i) => addDays(jToKey(ym.value.y, 1, 1), i));
+      ks.forEach(k => { const w = parseKey(k).getDay(); cnt[w] = (cnt[w] || 0) + 1; });
+      out.value.forEach(t => { const w = parseKey(t.date).getDay(); tot[w] = (tot[w] || 0) + t.amount; });
+      const items = order.map(w => ({ l: WK[order.indexOf(w)], v: cnt[w] ? (tot[w] || 0) / cnt[w] : 0 }));
+      const top = items.reduce((a, b) => (b.v > a.v ? b : a), items[0]);
+      items.forEach(i => { i.hl = i === top && i.v > 0; });
+      return items;
+    });
+    const timeOfDay = computed(() => {
+      const slots = [{ l: 'Morning', e: '🌅', r: [5, 12] }, { l: 'Afternoon', e: '☀️', r: [12, 17] }, { l: 'Evening', e: '🌆', r: [17, 22] }, { l: 'Night', e: '🌙', r: [22, 29] }];
+      const v = [0, 0, 0, 0]; let known = 0;
+      out.value.forEach(t => {
+        let h = null;
+        if (t.time) h = +t.time.split(':')[0];
+        else if (t.created && keyOf(new Date(t.created)) === t.date) h = new Date(t.created).getHours();
+        if (h == null) return;
+        known += t.amount;
+        const hh = h < 5 ? h + 24 : h;
+        const i = slots.findIndex(s => hh >= s.r[0] && hh < s.r[1]); if (i >= 0) v[i] += t.amount;
+      });
+      return { slots: slots.map((s, i) => ({ ...s, v: v[i], p: known ? v[i] / known : 0 })), known };
+    });
+    const top = computed(() => [...out.value].sort((a, b) => b.amount - a.amount).slice(0, 5));
+    const places = computed(() => {
+      const g = {};
+      out.value.forEach(t => {
+        const n = (t.note || '').trim(); if (!n) return;
+        const k = n.toLowerCase();
+        (g[k] = g[k] || { name: n, n: 0, v: 0, cat: t.cat }).n++; g[k].v += t.amount;
+      });
+      return Object.values(g).sort((a, b) => b.v - a.v).slice(0, 5);
+    });
+    const insights = computed(() => {
+      const list = [];
+      if (change.value != null && Math.abs(change.value) >= 0.1) list.push({ e: change.value > 0 ? '📈' : '📉', t: 'You spent ' + Math.round(Math.abs(change.value) * 100) + '% ' + (change.value > 0 ? 'more' : 'less') + ' than ' + (mode.value === 'month' ? JM[prevYm.value.m - 1] : prevYm.value.y) });
+      const up = cats.value.filter(c => c.ch != null && c.ch > 0.25 && c.v > spent.value * 0.08).sort((a, b) => b.ch - a.ch)[0];
+      if (up) list.push({ e: up.e, t: up.l + ' is up ' + Math.round(up.ch * 100) + '% compared with last ' + (mode.value === 'month' ? 'month' : 'year') });
+      if (cats.value[0] && cats.value[0].p > 0.35) list.push({ e: cats.value[0].e, t: cats.value[0].l + ' takes ' + Math.round(cats.value[0].p * 100) + '% of your spending' });
+      const wd = weekday.value.find(w => w.hl);
+      if (wd && out.value.length >= 8) list.push({ e: '📅', t: 'You spend the most on ' + WDL[[6, 0, 1, 2, 3, 4, 5][weekday.value.indexOf(wd)]] + 's' });
+      if (savedRate.value != null && income.value) list.push({ e: savedRate.value >= 0 ? '💰' : '⚠️', t: savedRate.value >= 0 ? 'You kept ' + Math.round(savedRate.value * 100) + '% of your income' : 'You spent ' + short(spent.value - income.value) + ' more than you earned' });
+      if (pendingTx.value.length) list.push({ e: '❔', t: pendingTx.value.length + ' transaction' + (pendingTx.value.length > 1 ? 's' : '') + ' still need a category' });
+      return list;
+    });
+    function exportCsv() {
+      const rows = [['Date', 'Shamsi date', 'Time', 'Type', 'Amount (Toman)', 'Category', 'Note', 'Bank']];
+      [...txs.value].sort((a, b) => (a.date < b.date ? -1 : 1)).forEach(t => rows.push([t.date, jFull(t.date), t.time || '', t.type === 'in' ? 'Income' : 'Expense', t.amount, catOf(t.cat).l, t.note || '', t.bank || '']));
+      Native.share(rows.map(r => r.map(v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v).join(',')).join('\n'));
+    }
+    const pct = v => (v >= 0 ? '+' : '−') + Math.round(Math.abs(v) * 100) + '%';
+    return { mode, ym, shift, isCur, spent, income, change, perDay, savedRate, pace, trend, months6, cats, weekday, timeOfDay, top, places, insights, exportCsv, pct, out, prevYm, daysElapsed };
+  },
+  template: `<div class="view" style="--acc:var(--c-money)">
+    <Head title="Reports" sub="Where your money goes"><button class="icon-btn" @click="exportCsv" aria-label="Export CSV"><Ic n="upload" :s="18"/></button></Head>
+    <div class="seg"><button :class="{on: mode === 'month'}" @click="mode = 'month'">Month</button><button :class="{on: mode === 'year'}" @click="mode = 'year'">Year</button></div>
+    <div class="month-nav" style="margin-top:12px">
+      <button @click="shift(-1)" aria-label="Previous"><Ic n="chevron-left"/></button>
+      <div style="text-align:center"><b>{{ mode === 'month' ? JM[ym.m - 1] + ' ' + ym.y : ym.y }}</b><div class="muted" style="font-size:12px;font-weight:600">{{ isCur ? (mode === 'month' ? 'This month' : 'This year') : '' }}</div></div>
+      <button @click="shift(1)" :style="{visibility: isCur ? 'hidden' : ''}" aria-label="Next"><Ic n="chevron-right"/></button>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi"><small>Spent</small><b>{{ short(spent) }}</b><span v-if="change != null" :class="change > 0 ? 'up' : 'down'">{{ pct(change) }} vs {{ mode === 'month' ? JM[prevYm.m - 1].slice(0, 3) : prevYm.y }}</span><span v-else class="muted">no earlier data</span></div>
+      <div class="kpi"><small>Income</small><b>{{ short(income) }}</b><span class="muted">{{ savedRate != null ? (savedRate >= 0 ? 'kept ' + Math.round(savedRate * 100) + '%' : 'overspent') : '—' }}</span></div>
+      <div class="kpi"><small>Per day</small><b>{{ short(perDay) }}</b><span class="muted">{{ daysElapsed }} days</span></div>
+      <div class="kpi"><small>Transactions</small><b>{{ out.length }}</b><span class="muted">avg {{ short(out.length ? spent / out.length : 0) }}</span></div>
+    </div>
+
+    <div v-if="pace" class="card pace" :class="{bad: pace.over > 0}">
+      <div class="sec"><h3><Ic n="target" :s="17"/>Budget pace</h3><span class="muted" style="font-size:13px;font-weight:600">{{ short(pace.b) }} budget</span></div>
+      <div class="pace-bar"><i :style="{width: Math.min(100, pace.pct * 100) + '%'}"></i><em :style="{left: Math.min(100, pace.timePct * 100) + '%'}"></em></div>
+      <p>{{ pace.over > 0 ? 'At this pace you\\'ll spend about ' + short(pace.proj) + ', which is ' + short(pace.over) + ' over budget.' : 'On track. You\\'ll end around ' + short(pace.proj) + '.' }} To stay within budget, spend up to <b>{{ short(pace.safe) }}</b> a day for the rest of the month.</p>
+    </div>
+
+    <div v-if="insights.length" class="card">
+      <div class="sec"><h3><Ic n="lightbulb" :s="17"/>Insights</h3></div>
+      <div v-for="(x, i) in insights" :key="i" class="insight"><span>{{ x.e }}</span>{{ x.t }}</div>
+    </div>
+
+    <template v-if="out.length">
+      <div class="card">
+        <div class="sec"><h3>{{ mode === 'month' ? 'Daily spending' : 'Monthly spending' }}</h3></div>
+        <Bars :items="trend" :avg="mode === 'month' ? perDay : spent / Math.max(1, trend.filter(t => t.v).length)" :fmtv="short"/>
+      </div>
+
+      <div class="card">
+        <div class="sec"><h3>By category</h3><span class="muted" style="font-size:13px;font-weight:600">{{ cats.length }} categories</span></div>
+        <div class="donut-row">
+          <Donut :parts="cats.map(c => ({v: c.v, c: c.c}))"><div><b style="font-size:17px">{{ short(spent) }}</b><div class="muted" style="font-size:11px;font-weight:600">spent</div></div></Donut>
+          <div class="legend-list"><div v-for="c in cats.slice(0, 5)" :key="c.id"><i :style="{background: c.c}"></i>{{ c.l }}<b>{{ Math.round(c.p * 100) }}%</b></div></div>
+        </div>
+        <div v-for="c in cats" :key="c.id" class="cat-row">
+          <div class="e">{{ c.e }}</div>
+          <div class="n">{{ c.l }}<small>{{ c.n }} transaction{{ c.n > 1 ? 's' : '' }}<template v-if="c.ch != null"> · <span :class="c.ch > 0 ? 'up' : 'down'">{{ pct(c.ch) }}</span></template></small></div>
+          <div class="v">{{ short(c.v) }}<small>{{ Math.round(c.p * 100) }}%</small></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec"><h3>Last 6 months</h3><span class="legend-inline"><i style="background:var(--c-money)"></i>Spent <i style="background:color-mix(in srgb, var(--c-habits) 55%, transparent)"></i>Income</span></div>
+        <Bars :items="months6.map(m => ({...m, show: true}))" :fmtv="short"/>
+      </div>
+
+      <div class="grid2">
+        <div class="card"><div class="sec"><h3 style="font-size:15px">By weekday</h3></div><Bars :items="weekday" :h="110" c="color-mix(in srgb, var(--c-money) 45%, transparent)"/><div class="muted" style="font-size:11.5px;margin-top:6px">Average spent per day</div></div>
+        <div class="card"><div class="sec"><h3 style="font-size:15px">Time of day</h3></div>
+          <div v-for="sl in timeOfDay.slots" :key="sl.l" class="tod"><span>{{ sl.e }}</span><div class="grow"><div class="tl">{{ sl.l }}</div><div class="bar" style="margin:4px 0 0;height:6px;--c:var(--c-money)"><i :style="{width: (sl.p * 100) + '%'}"></i></div></div><b>{{ Math.round(sl.p * 100) }}%</b></div>
+          <div v-if="!timeOfDay.known" class="muted" style="font-size:11.5px">Needs transaction times</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec"><h3>Biggest expenses</h3></div>
+        <div v-for="t in top" :key="t.id" class="cat-row tap" @click="ui.tx = {ref: t}">
+          <div class="e">{{ catOf(t.cat).e }}</div>
+          <div class="n">{{ t.note || catOf(t.cat).l }}<small>{{ rel(t.date) }} · {{ jLabel(t.date) }}{{ t.bank ? ' · ' + t.bank : '' }}</small></div>
+          <div class="v">{{ fmt(t.amount) }}</div>
+        </div>
+      </div>
+
+      <div v-if="places.length" class="card">
+        <div class="sec"><h3><Ic n="store" :s="17"/>Where you spend most</h3></div>
+        <div v-for="p in places" :key="p.name" class="cat-row">
+          <div class="e">{{ catOf(p.cat).e }}</div>
+          <div class="n">{{ p.name }}<small>{{ p.n }} time{{ p.n > 1 ? 's' : '' }}</small></div>
+          <div class="v">{{ short(p.v) }}</div>
+        </div>
+      </div>
+    </template>
+    <Empty v-else e="📊" t="Nothing to report yet" :s="'No expenses in ' + (mode === 'month' ? JM[ym.m - 1] : ym.y) + '.'"/>
+  </div>`,
+};
+
 const SettingsView = {
   setup() {
     const imp = ref(false), txt = ref(''), reset = ref(false);
@@ -1972,7 +2760,14 @@ const SettingsView = {
     <div class="label">Money</div>
     <div class="settings-group"><div class="list-row"><span class="bubble" style="--c:var(--c-money)"><Ic n="target" :s="18"/></span>
       <div class="grow"><div class="t">Monthly budget</div><input v-model="budgetStr" inputmode="numeric" placeholder="Not set" style="background:none;border:0;outline:none;font-size:15px;padding:4px 0 0;width:100%;color:var(--text-2)" enterkeyhint="done"></div>
-      <span class="muted" style="font-weight:600">Toman</span></div></div>
+      <span class="muted" style="font-weight:600">Toman</span></div>
+      <div v-if="Native.has" class="list-row"><span class="bubble" style="--c:var(--c-money)"><Ic n="message-square-text" :s="18"/></span>
+        <div class="grow"><div class="t">Add from bank SMS</div><div class="s">{{ S.settings.sms.on ? (Sms.granted ? 'On · read on this phone only' : 'SMS access was removed') : 'Off' }}</div></div>
+        <Toggle :model-value="S.settings.sms.on && Sms.granted" @update:model-value="v => v ? smsEnable() : smsDisable()"/></div>
+      <div class="list-row" style="display:block"><div class="t" style="margin-bottom:8px">My bank SMS amounts are in</div>
+        <div class="seg"><button :class="{on: S.settings.sms.unit === 'rial'}" @click="S.settings.sms.unit = 'rial'">Rial (most banks)</button><button :class="{on: S.settings.sms.unit === 'toman'}" @click="S.settings.sms.unit = 'toman'">Toman</button></div>
+        <div class="s" style="margin-top:6px">Used when the SMS doesn't say. Orbit stores everything in Toman.</div></div>
+    </div>
 
     <div class="label">Notifications</div>
     <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="go('alerts')">
@@ -2025,7 +2820,7 @@ const App = {
     ];
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
-      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView,
+      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView,
     };
     const current = computed(() => nav.screen || nav.tab);
     function tab(id) {
@@ -2054,14 +2849,14 @@ const app = createApp(App);
 Object.assign(app.config.globalProperties, {
   S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
-  toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
+  clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
+const live = { cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
-  .component('Empty', Empty).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('Onboarding', Onboarding);
+  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('Onboarding', Onboarding);
 app.mount('#app');
 
 if (!Native.has) {

@@ -29,8 +29,27 @@ const OUT = process.argv[3];
     g.S.cycleDays.push(g.addDays(k, -8));`);
 
   for (const t of ['today', 'tasks', 'habits', 'money', 'more']) await step('tab ' + t, () => G(`g.nav.screen = null; g.nav.tab = '${t}'`));
-  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
+  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts', 'reports']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
 
+  // bank SMS → drafts → categorize
+  await step('sms import', () => p.evaluate(() => {
+    const now = Date.now();
+    const added = smsImport([
+      { sender: 'Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' },
+      { sender: 'Saman', ts: now - 7200e3, body: 'بانک سامان\nواریز به حساب 849-800-123456-1\nمبلغ: 250,000,000 ریال\nمانده: 312,450,000' },
+      { sender: 'x', ts: now, body: 'رمز پویا: 1234 مبلغ 50,000' },
+    ]);
+    smsImport([{ sender: 'Mellat', ts: now - 3600e3, body: 'بانك ملت\nبرداشت: 1,250,000\nمانده: 35,420,118' }]); // duplicate ignored
+    if (added.length !== 2 || pendingTx.value.length !== 2) throw new Error('expected 2 drafts, got ' + added.length);
+  }));
+  await step('money with review list', () => G(`g.nav.screen = null; g.nav.tab = 'money'`));
+  await step('categorize draft', () => p.click('.review .rv .chip'));
+  assert.equal(await p.evaluate(() => pendingTx.value.length), 1);
+  await step('draft details sheet', () => p.click('.review .rv-top'));
+  assert.equal(await p.evaluate(() => document.querySelector('.sheet .btn.primary').disabled), true, 'save disabled until a category is picked');
+  await G(`window.orbitBack()`);
+  await step('reports', () => G(`g.nav.screen = 'reports'`));
+  await step('reports year', () => p.click('.seg button:nth-child(2)'));
   await step('task sheet (new)', () => G(`g.nav.screen = null; g.nav.tab = 'tasks'; g.ui.task = { preset: { due: g.R.today } }`));
   await step('task sheet (edit, reminder)', () => G(`g.ui.task = null; g.ui.task = { ref: g.S.tasks[0] }`));
   await step('money sheet', () => G(`g.ui.task = null; g.ui.tx = {}`));
@@ -42,6 +61,21 @@ const OUT = process.argv[3];
   await step('countdown sheet', async () => { await G(`g.nav.screen = 'countdowns'`); await p.waitForTimeout(300); await p.click('.fab'); });
   await G(`window.orbitBack()`);
   await step('cycle settings', async () => { await G(`g.nav.screen = 'cycle'`); await p.waitForTimeout(300); await p.click('.top .icon-btn:last-child'); });
+  await G(`window.orbitBack()`);
+
+  // cycle: tabs, day log, settings
+  await step('cycle today tab', () => G(`g.nav.screen = 'cycle'`));
+  await step('cycle day sheet', () => p.click('.cyc-hero .btn-row .btn:last-child'));
+  await step('log symptom + mood', async () => { await p.click('.sheet .chips .chip >> nth=0'); await p.click('.sheet .flow-pick button:nth-child(4)'); });
+  assert.ok(await p.evaluate(() => (S.cycleLog[R.today] || {}).sym && S.cycleDays.includes(R.today)), 'day log saved, medium flow marks period day');
+  await G(`window.orbitBack()`);
+  await step('cycle calendar tab', () => p.click('.view .seg button:nth-child(2)'));
+  await step('calendar day tap', () => p.click('.cal button.td'));
+  await G(`window.orbitBack()`);
+  await step('cycle insights tab', () => p.click('.view .seg button:nth-child(3)'));
+  await step('cycle settings sheet', () => p.click('.top .icon-btn:last-child'));
+  await step('pill reminder on', () => G(`g.S.settings.cycle.pill.on = true; g.S.settings.cycle.fertileNotify = true`));
+  assert.ok(await p.evaluate(() => plan.value.some(r => r.id.startsWith('pill:')) && plan.value.some(r => r.id.startsWith('ovu:') || r.id.startsWith('fert:'))), 'pill and fertile reminders planned');
   await G(`window.orbitBack()`);
 
   // focus: every control
