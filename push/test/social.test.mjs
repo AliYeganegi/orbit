@@ -107,6 +107,30 @@ try {
   assert.equal((await call('/s/p/' + pid + '/react', { body: { s: 1, emoji: '<b>' }, token: ta })).status, 400);
   console.log('✓ replies and reactions');
 
+  // photos: only real images, only members can load them, the message carries size for layout
+  const up = (body, token, type = 'image/jpeg') => fetch(W + '/s/p/' + pid + '/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': type }, body })
+    .then(async r => ({ status: r.status, data: await r.json().catch(() => null) }));
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new TextEncoder().encode('fake jpeg body '.repeat(50))]);
+  assert.equal((await up(new TextEncoder().encode('<script>alert(1)</script>'), ta, 'image/png')).status, 415, 'not an image');
+  assert.equal((await up(new Uint8Array(1_900_000).fill(0xff), ta)).status, 413, 'too big');
+  const fid = (await up(jpeg, ta)).data.fid;
+  assert.ok(fid);
+  const n1 = received.length;
+  const pm = await call('/s/p/' + pid + '/send', { body: { text: 'look', media: { fid, width: 800, height: 600 } }, token: ta });
+  assert.deepEqual(pm.data.media, { fid, width: 800, height: 600 });
+  assert.equal((await waitFor(() => received.slice(n1).find(m => m.title === 'Ali'), 'photo push')).body, '📷 Photo: look');
+  const only = await call('/s/p/' + pid + '/send', { body: { media: { fid, width: 1, height: 1 } }, token: ta });
+  assert.equal(only.data.text, '', 'a photo needs no caption');
+  assert.equal((await call('/s/p/' + pid + '/send', { body: { media: { fid: 'x'.repeat(20) } }, token: ta })).status, 404, 'unknown photo');
+  const got = await fetch(W + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + tb } });
+  assert.equal(got.headers.get('content-type'), 'image/jpeg');
+  assert.deepEqual(new Uint8Array(await got.arrayBuffer()), jpeg, 'partner gets the same bytes');
+  assert.equal((await fetch(W + '/s/p/' + pid + '/file/' + fid)).status, 401, 'no key, no photo');
+  assert.equal((await fetch(W + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + tc } })).status, 404, 'outsiders can\'t load it');
+  const replyToPhoto = await call('/s/p/' + pid + '/send', { body: { text: 'nice', re: only.data.s }, token: tb });
+  assert.deepEqual(replyToPhoto.data.rq, { by: A, text: '📷 Photo', photo: true });
+  console.log('✓ photos: upload, send, members only');
+
   // relationship type: needs both people, and the first question comes right away
   await call('/s/p/' + pid + '/type', { body: { type: 'married' }, token: ta });
   await waitFor(() => received.find(m => /says you are Married/.test(m.title)), 'proposal push');

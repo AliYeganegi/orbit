@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.11'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.12'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -969,13 +969,23 @@ function markRead(id) {
   clearTimeout(readTimer);
   readTimer = setTimeout(() => api('/p/' + id + '/read', { seq: last.s }).catch(() => {}), 400);
 }
-async function sendMsg(id, text, reply) {
+async function sendMsg(id, text, reply, photo) {
   const c = Soc.chats[id];
-  if (!c || !text.trim()) return;
-  const cid = uid(), re = reply && reply.s ? { re: reply.s, rq: { by: reply.by, text: clip(reply.text, 140) } } : {};
-  c.messages.push({ by: Soc.acct.handle, text: text.trim(), at: Date.now(), cid, pending: true, ...re });
+  if (!c || (!text.trim() && !photo)) return;
+  const cid = uid(), re = reply && reply.s ? { re: reply.s, rq: { by: reply.by, text: clip(reply.text || '📷 Photo', 140) } } : {};
+  const local = photo ? URL.createObjectURL(photo.blob) : null;
+  c.messages.push({ by: Soc.acct.handle, text: text.trim(), at: Date.now(), cid, pending: true, ...re,
+    ...(photo ? { media: { local, width: photo.width, height: photo.height }, _photo: photo } : {}) });
   try {
-    const m = await api('/p/' + id + '/send', { text: text.trim(), cid, re: re.re });
+    let media;
+    if (photo) {
+      const res = await fetch(PUSH_URL + '/s/p/' + id + '/upload', { method: 'POST', headers: { Authorization: 'Bearer ' + Soc.acct.token, 'Content-Type': 'image/jpeg' }, body: photo.blob });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) { const e = new Error(d.error || 'The photo didn\'t upload'); e.status = res.status; throw e; }
+      media = { fid: d.fid, width: photo.width, height: photo.height };
+      Photos[d.fid] = local; // no need to download what we just sent
+    }
+    const m = await api('/p/' + id + '/send', { text: text.trim(), cid, re: re.re, media });
     const i = c.messages.findIndex(x => x.cid === cid && !x.s);
     if (c.messages.some(x => x.s === m.s)) { if (i >= 0) c.messages.splice(i, 1); } // the live event got here first
     else if (i >= 0) c.messages.splice(i, 1, m); else c.messages.push(m);
@@ -989,7 +999,52 @@ async function sendMsg(id, text, reply) {
 function retryMsg(id, m) {
   const c = Soc.chats[id], i = c.messages.indexOf(m);
   if (i >= 0) c.messages.splice(i, 1);
-  sendMsg(id, m.text, m.re ? { s: m.re, ...m.rq } : null);
+  sendMsg(id, m.text, m.re ? { s: m.re, ...m.rq } : null, m._photo);
+}
+
+/* photos: resized on the phone before upload; loaded with the login key, since only the two members may see them */
+const Photos = reactive({}); // fid -> object URL | 'loading' | 'error'
+async function loadPhoto(pid, fid) {
+  if (Photos[fid]) return;
+  Photos[fid] = 'loading';
+  try {
+    const res = await fetch(PUSH_URL + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + Soc.acct.token } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    Photos[fid] = URL.createObjectURL(await res.blob());
+  } catch (e) { Photos[fid] = 'error'; }
+}
+const canPhoto = !AN || !!AN.pickPhoto; // Android needs app 1.12 for the photo picker
+let photoWait = null;
+window.orbitPhoto = r => { const f = photoWait; photoWait = null; if (f) f(r); };
+async function shrinkPhoto(file) {
+  const bmp = await createImageBitmap(file); // applies the photo's EXIF rotation
+  const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height)), w = Math.round(bmp.width * k), h = Math.round(bmp.height * k);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  return { blob: await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.82)), width: w, height: h };
+}
+/** Lets the person pick a photo: Android's system picker (resized natively), or the browser's file picker. */
+function pickPhoto() {
+  if (AN && AN.pickPhoto) {
+    return new Promise(res => { photoWait = res; AN.pickPhoto(); }).then(r => {
+      if (!r) return null;
+      if (r.error) { say('Couldn\'t open that photo'); return null; }
+      const bin = atob(r.data), u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return { blob: new Blob([u8], { type: 'image/jpeg' }), width: r.width, height: r.height };
+    });
+  }
+  return new Promise(res => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.style.display = 'none';
+    document.body.appendChild(inp);
+    inp.onchange = async () => {
+      const f = inp.files[0]; inp.remove();
+      if (!f) return res(null);
+      try { res(await shrinkPhoto(f)); } catch (e) { say('Couldn\'t open that photo'); res(null); }
+    };
+    inp.click();
+  });
 }
 const REACTS = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
 /** Toggles your reaction on a message (tapping the same emoji again removes it). */
@@ -2950,7 +3005,7 @@ function pairLine(p) {
   if (!p.type) return { t: p.proposal ? 'Waiting for ' + nm + ' to accept' : 'Choose what you are to each other', hot: !p.proposal };
   if (p.today && p.today.day === p.todayKey && !p.today.mine) return { t: '💬 Today\'s question is waiting' + (p.today.theyAnswered ? ' · ' + nm + ' answered' : ''), hot: true };
   if (p.today && p.today.day === p.todayKey && !p.today.theirs) return { t: 'You answered · waiting for ' + nm };
-  if (p.last) return { t: (p.last.by === me ? 'You: ' : '') + clip(p.last.text, 60) };
+  if (p.last) return { t: (p.last.by === me ? 'You: ' : '') + clip(p.last.text || '📷 Photo', 60) };
   return { t: 'Say hi 👋' };
 }
 
@@ -3176,17 +3231,46 @@ const PairView = {
     const toBottom = (smooth) => nextTick(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }));
     watch(() => st.value && st.value.messages.length, (n, o) => { if (tab.value === 'chat') { toBottom(!!o); markRead(id); } });
     watch(tab, t => { if (t === 'chat') { toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
-    const sel = ref(null), replyTo = ref(null), flash = ref(null);
+    const sel = ref(null), replyTo = ref(null), flash = ref(null), pending = ref(null), viewer = ref(null), comp = ref(null);
     function send() {
-      const t = draft.value; if (!t.trim()) return;
-      draft.value = ''; sendMsg(id, t, replyTo.value); replyTo.value = null; Native.vibrate(8);
+      const t = draft.value; if (!t.trim() && !pending.value) return;
+      draft.value = ''; sendMsg(id, t, replyTo.value, pending.value); replyTo.value = null; pending.value = null; Native.vibrate(8);
       if (box.value) box.value.style.height = '';
     }
+    async function attach() {
+      const ph = await pickPhoto();
+      if (ph) { pending.value = { ...ph, url: URL.createObjectURL(ph.blob) }; toBottom(true); }
+    }
+    // tap a message for reactions and reply; long-press does the same on photos (a tap opens the photo)
+    let pressT = null, pressed = false;
+    function pressStart(m) {
+      pressed = false; clearTimeout(pressT);
+      pressT = setTimeout(() => { if (m.s) { pressed = true; sel.value = m.s; Native.vibrate(15); } }, 450);
+    }
+    const pressEnd = () => clearTimeout(pressT);
     function tapMsg(m) {
+      if (pressed) { pressed = false; return; }
       if (m.failed) return retryMsg(id, m);
       if (!m.s) return;
       sel.value = sel.value === m.s ? null : m.s;
     }
+    const srcOf = m => (m.media ? m.media.local || (Photos[m.media.fid] && !['loading', 'error'].includes(Photos[m.media.fid]) ? Photos[m.media.fid] : null) : null);
+    function openPhoto(m) {
+      if (pressed) { pressed = false; return; }
+      const src = srcOf(m); if (src) viewer.value = src;
+    }
+    const closeViewer = () => { viewer.value = null; };
+    watch(viewer, v => (v ? pushBack(closeViewer) : popBack(closeViewer)));
+    watchEffect(() => { for (const m of (st.value ? st.value.messages : [])) if (m.media && m.media.fid && !m.media.local) loadPhoto(id, m.media.fid); });
+    function bgTap(e) { if (sel.value != null && !e.target.closest('.msg, .msg-tools')) sel.value = null; }
+    // keep the last messages visible above the box (its height changes with replies and photos)
+    let ro = null;
+    watch(comp, el => {
+      if (ro) ro.disconnect();
+      if (el && window.ResizeObserver) { ro = new ResizeObserver(() => document.documentElement.style.setProperty('--composer-h', el.offsetHeight + 'px')); ro.observe(el); }
+    });
+    onBeforeUnmount(() => { if (ro) ro.disconnect(); popBack(closeViewer); });
+    const onFocus = () => setTimeout(() => toBottom(true), 350); // after the keyboard has opened
     function reply(m) { replyTo.value = m; sel.value = null; nextTick(() => box.value && box.value.focus()); }
     function react(m, e) { reactMsg(id, m, e); sel.value = null; }
     function copyMsg(m) { sel.value = null; try { navigator.clipboard.writeText(m.text).then(() => say('Copied')); } catch (e) {} }
@@ -3250,9 +3334,9 @@ const PairView = {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
-  template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)">
+  template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
     <header class="top sm">
       <button class="icon-btn" @click="nav.screen = 'people'" aria-label="Back"><Ic n="chevron-left" :s="22"/></button>
       <span v-if="p" class="av">{{ p.with.emoji || '🙂' }}</span>
@@ -3325,9 +3409,14 @@ const PairView = {
           <template v-for="r in rows" :key="r.key">
             <div v-if="r.sep" class="chat-sep">{{ r.sep }}</div>
             <template v-else>
-            <div class="msg" :id="r.m.s ? 'msg' + r.m.s : null" :class="{me: r.m.by === meH, failed: r.m.failed, picked: sel === r.m.s, flash: flash === r.m.s, reacted: r.m.rx}" @click="tapMsg(r.m)">
+            <div class="msg" :id="r.m.s ? 'msg' + r.m.s : null" :class="{me: r.m.by === meH, failed: r.m.failed, picked: sel === r.m.s, flash: flash === r.m.s, reacted: r.m.rx, photo: r.m.media}"
+              @click="tapMsg(r.m)" @pointerdown="pressStart(r.m)" @pointerup="pressEnd" @pointerleave="pressEnd" @pointercancel="pressEnd" @contextmenu.prevent>
               <div v-if="r.m.rq" class="quote" @click.stop="jump(r.m.re)"><b>{{ r.m.rq.by === meH ? 'You' : nm }}</b><span>{{ r.m.rq.text }}</span></div>
-              <div class="txt">{{ r.m.text }}</div>
+              <button v-if="r.m.media" class="pic" :style="{aspectRatio: (r.m.media.width || 4) + ' / ' + (r.m.media.height || 3)}" @click.stop="openPhoto(r.m)" aria-label="Open photo">
+                <img v-if="srcOf(r.m)" :src="srcOf(r.m)" alt="" draggable="false">
+                <span v-else class="pic-wait"><Ic :n="Photos[r.m.media.fid] === 'error' ? 'circle-alert' : 'image'" :s="24"/></span>
+                <span v-if="r.m.pending" class="pic-up"><Ic n="clock" :s="16"/></span></button>
+              <div v-if="r.m.text" class="txt">{{ r.m.text }}</div>
               <div class="meta">{{ r.m.failed ? 'Not sent · tap to retry' : hm(r.m.at) }}
                 <template v-if="r.m.by === meH && !r.m.failed"><Ic v-if="r.m.pending" n="clock" :s="12"/><Ic v-else :n="st.theirRead >= r.m.s ? 'check-check' : 'check'" :s="13" :class="{seen: st.theirRead >= r.m.s}"/></template></div>
               <div v-if="r.m.rx" class="rx" @click.stop="sel = r.m.s"><span v-for="x in rxList(r.m)" :key="x.h" :class="{mine: x.mine}">{{ x.e }}</span></div>
@@ -3341,12 +3430,16 @@ const PairView = {
             </template>
           </template>
         </div>
-        <div class="composer">
-          <div v-if="replyTo" class="reply-bar"><Ic n="reply" :s="15"/><div class="grow"><b>{{ replyTo.by === meH ? 'You' : nm }}</b><span>{{ replyTo.text }}</span></div>
-            <button @click="replyTo = null" aria-label="Cancel reply"><Ic n="x" :s="16"/></button></div>
-          <textarea ref="box" v-model="draft" rows="1" placeholder="Message" maxlength="2000" @input="grow" @keydown.enter.exact="!IOS && !Native.has && ($event.preventDefault(), send())"></textarea>
-          <button class="send" :disabled="!draft.trim()" @pointerdown.prevent @mousedown.prevent @click="send" aria-label="Send"><Ic n="send" :s="19"/></button>
+        <div class="composer" ref="comp">
+          <div v-if="replyTo" class="reply-bar"><Ic n="reply" :s="15"/><div class="grow"><b>{{ replyTo.by === meH ? 'You' : nm }}</b><span>{{ replyTo.text || '📷 Photo' }}</span></div>
+            <button @pointerdown.prevent @mousedown.prevent @click="replyTo = null" aria-label="Cancel reply"><Ic n="x" :s="16"/></button></div>
+          <div v-if="pending" class="attach-bar"><img :src="pending.url" alt=""><span class="grow">Photo ready · add a caption or send</span>
+            <button @pointerdown.prevent @mousedown.prevent @click="pending = null" aria-label="Remove photo"><Ic n="x" :s="16"/></button></div>
+          <button v-if="canPhoto" class="attach" @pointerdown.prevent @mousedown.prevent @click="attach" aria-label="Add a photo"><Ic n="image" :s="21"/></button>
+          <textarea ref="box" v-model="draft" rows="1" :placeholder="pending ? 'Add a caption…' : 'Message'" maxlength="2000" @input="grow" @focus="onFocus" @keydown.enter.exact="!IOS && !Native.has && ($event.preventDefault(), send())"></textarea>
+          <button class="send" :disabled="!draft.trim() && !pending" @pointerdown.prevent @mousedown.prevent @click="send" aria-label="Send"><Ic n="send" :s="19"/></button>
         </div>
+        <Teleport to="body"><Transition name="fade"><div v-if="viewer" class="viewer" @click="viewer = null"><img :src="viewer" alt=""><button class="close" aria-label="Close"><Ic n="x" :s="22"/></button></div></Transition></Teleport>
       </template>
     </template>
     <div v-else class="card" style="margin-top:12px"><Empty e="⏳" t="Loading…" s=""/></div>
@@ -3958,7 +4051,12 @@ const App = {
     // keep bottom sheets above the iOS keyboard
     const vv = window.visualViewport;
     if (vv) {
-      const fit = () => { document.documentElement.style.setProperty('--vvh', vv.height + 'px'); document.documentElement.style.setProperty('--vvt', vv.offsetTop + 'px'); };
+      const fit = () => {
+        const st = document.documentElement.style;
+        st.setProperty('--vvh', vv.height + 'px'); st.setProperty('--vvt', vv.offsetTop + 'px');
+        // the part of the layout covered by the keyboard (iPhone); 0 where the page itself shrinks (Android)
+        st.setProperty('--kbb', Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + 'px');
+      };
       vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit();
     }
     const tabs = [

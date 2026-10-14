@@ -1,11 +1,11 @@
 {
- "build": 1,
- "version": "1.11",
+ "build": 3,
+ "version": "1.12",
  "minNative": 21,
  "files": {
-  "app.css": "17f33b2518de8cff2dc7226de49b50e62c7fcd9c654064e495af89d08b5ea73e",
-  "app.js": "ecabf33605f9aca772355e84f7eea0ef9acc077d00471ade6c9b2585402ecb4a",
-  "icons.js": "32af760efe9f4cefc2e42f04bb7457542ad9e251e3341137ef6b0942aefec19e",
+  "app.css": "c26afe6ff10fda4f643f2546693d832861a251d5512fe31f2af57ac4a85e3b51",
+  "app.js": "efa7804606f2bf950573c9cd33f70d2c215a8b17bdf92751fcd6aa3519c69421",
+  "icons.js": "eb2bed4cb78f547951e2f9f0c4cde273ec49350e433bfb67fc4c5929a96523da",
   "index.html": "7b1867f0b677d7de0c628ed3ecb1752eae3f91e5c900776adc2718cc76a434d7",
   "inter.woff2": "f052ee44c3728dfd23aba8a4567150bc314d23903026fbb6ad089422c2df56af",
   "questions.js": "9d1e87666f872f8122fe16b1fab5b6c038881f11bd5527adb308f2be879d259c",
@@ -13,5 +13,12 @@
   "sms.js": "de394e2357f425f03eb85f9716c71ec4f624e38f047ec63170ae5c22a9d5d7eb",
   "tips.js": "7c28b7bcde9f8e8df727bf2b418507c5804be341b648890e07c80cc42642f253",
   "vue.js": "c459ba7cc8db65c982589fa5d64c7ff478877e8e5b0fd75683207cec6a4e89e8"
+ },
+ "native": {
+  "code": 22,
+  "name": "1.12",
+  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.12/Orbit-1.12.apk",
+  "sha256": "f3aacad672d4191b10b857b321a737db378ec89de4dbc7228102522615819e71",
+  "size": 271854
  }
 }

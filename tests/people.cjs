@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const URL = process.argv[2] || 'http://127.0.0.1:8766/';
 const API = process.argv[3] || 'http://127.0.0.1:8797';
 const OUT = process.argv[4];
+const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').tmpdir(), 'orbit-test-photo.png');
 
 (async () => {
   const b = await chromium.launch({ executablePath: process.env.CHROME || '/usr/bin/google-chrome' });
@@ -116,6 +117,43 @@ const OUT = process.argv[4];
   await A.shot('people-9-chat');
   await B.shot('people-9b-chat');
   A.ok('react to a message, reply with a quote'); 
+
+  // the keyboard case: while replying, the box (now taller) must stay visible above the keyboard.
+  // Android shrinks the page when the keyboard opens, so a smaller viewport stands in for it here.
+  await A.p.click('.msg:not(.me):has-text("Hey!")');
+  await A.p.click('.msg-tools button[aria-label="Reply"]');
+  await A.p.waitForSelector('.reply-bar');
+  await A.p.focus('.composer textarea');
+  await A.p.setViewportSize({ width: 390, height: 480 });
+  await A.p.waitForTimeout(700);
+  const box = await A.p.evaluate(() => {
+    const t = document.querySelector('.composer textarea').getBoundingClientRect(), c = document.querySelector('.composer').getBoundingClientRect();
+    const msgs = [...document.querySelectorAll('.msg')], last = msgs[msgs.length - 1].getBoundingClientRect();
+    return { kb: !!document.querySelector('.kb'), tBottom: t.bottom, cTop: c.top, lastBottom: last.bottom, h: innerHeight };
+  });
+  assert.ok(box.kb, 'keyboard layout on');
+  assert.ok(box.tBottom <= box.h, 'text box visible: ' + JSON.stringify(box));
+  assert.ok(box.lastBottom <= box.cTop + 1, 'newest message not hidden behind the box: ' + JSON.stringify(box));
+  await A.shot('people-11-keyboard');
+  await A.p.click('.reply-bar button[aria-label="Cancel reply"]');
+  await A.p.setViewportSize({ width: 390, height: 844 });
+  A.ok('replying with the keyboard open keeps the text box and the last message visible');
+
+  // photos: pick, preview, caption, send; the other side loads it
+  const [chooser] = await Promise.all([A.p.waitForEvent('filechooser'), A.p.click('.composer .attach')]);
+  await chooser.setFiles(PHOTO);
+  await A.p.waitForSelector('.attach-bar img');
+  await A.p.fill('.composer textarea', 'Sunset 🌅');
+  await A.p.click('.composer .send');
+  await B.p.waitForSelector('.msg.photo:has-text("Sunset") .pic img', { timeout: 10000 });
+  const nat = await B.p.$eval('.msg.photo .pic img', img => new Promise(r => (img.complete ? r(img.naturalWidth) : img.onload = () => r(img.naturalWidth))));
+  assert.ok(nat > 0 && nat <= 1600, 'photo resized and loaded: ' + nat);
+  await B.p.click('.msg.photo .pic');
+  await B.p.waitForSelector('.viewer img');
+  await B.shot('people-12-viewer');
+  await B.p.click('.viewer');
+  await B.shot('people-12b-photo');
+  A.ok('send a photo with a caption; it opens full screen');
 
   // badges: a message to someone who isn't looking shows up on Today and on More
   await B.G(`g.nav.screen = null; g.nav.tab = 'today'`);

@@ -21,6 +21,18 @@ const MAX_EVENTS = 300;
 const LIVE = 70_000; // a socket that pinged this recently means the app is open: no push needed
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 const DEFAULT_TIME = '20:00';
+const MAX_PHOTO = 1_800_000;          // per photo (the app sends ~200–500 KB after resizing on the phone)
+const MAX_PAIR_MEDIA = 400_000_000;   // per conversation
+
+/** The image type from the file's first bytes, so nothing but real images is stored or served. */
+function imageType(b) {
+  const u = new Uint8Array(b.slice(0, 12));
+  if (u[0] === 0xff && u[1] === 0xd8 && u[2] === 0xff) return 'image/jpeg';
+  if (u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47) return 'image/png';
+  if (String.fromCharCode(...u.slice(0, 4)) === 'RIFF' && String.fromCharCode(...u.slice(8, 12)) === 'WEBP') return 'image/webp';
+  if (String.fromCharCode(...u.slice(0, 4)) === 'GIF8') return 'image/gif';
+  return null;
+}
 
 const typeOf = id => Q.TYPES.find(t => t.id === id);
 const pairId = (a, b) => [a, b].sort().join('~');
@@ -293,19 +305,42 @@ export class Pair extends DurableObject {
     return [...l.values()].map(d => this.view(meta, profiles, d, h));
   }
 
-  async send(h, text, cid, re) {
+  /** Stores a photo for a message about to be sent; only the two members can load it back. */
+  async upload(h, bytes, type) {
+    const used = (await this.ctx.storage.get('fbytes')) || 0;
+    if (used + bytes.byteLength > MAX_PAIR_MEDIA) return { error: 'This chat has no room for more photos', status: 413 };
+    const fid = b64u.encode(crypto.getRandomValues(new Uint8Array(15)));
+    await this.ctx.storage.put({ ['f:' + fid]: { by: h, type, size: bytes.byteLength, at: Date.now(), data: bytes }, fbytes: used + bytes.byteLength });
+    return { fid };
+  }
+
+  async file(fid) {
+    const f = await this.ctx.storage.get('f:' + fid);
+    return f ? { type: f.type, data: f.data } : null;
+  }
+
+  async send(h, text, cid, re, media) {
     const s = await this.all(['meta', 'profiles', 'mseq', 'read']);
+    let photo = null;
+    if (media && typeof media.fid === 'string') {
+      const f = await this.ctx.storage.get('f:' + media.fid);
+      if (!f || f.by !== h) return { error: 'photo not found', status: 404 };
+      photo = { fid: media.fid, width: Math.round(Number(media.width)) || 0, height: Math.round(Number(media.height)) || 0 };
+    }
+    if (!text && !photo) return { error: 'empty' };
     const seq = (s.mseq || 0) + 1;
     const m = { s: seq, by: h, text, at: Date.now(), cid: typeof cid === 'string' ? cid.slice(0, 40) : undefined };
+    if (photo) m.media = photo;
     if (Number.isInteger(re) && re > 0 && re < seq) { // a reply keeps a short copy of what it answers, so it shows without loading old messages
       const orig = await this.ctx.storage.get('m:' + pad(re));
-      if (orig) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text, 140) }; }
+      if (orig) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text || '📷 Photo', 140) }; if (orig.media) m.rq.photo = true; }
     }
     const read = s.read || {};
     read[h] = seq; // sending means you've seen everything before it
     await this.ctx.storage.put({ mseq: seq, ['m:' + pad(seq)]: m, read });
     const id = s.meta.id, o = this.other(s.meta, h);
-    await this.tell(o, { t: 'msg', pair: id, m, n: { title: this.name(s.profiles, h), body: clip(text, 160), go: 'pair:' + id, tag: 'msg:' + id } });
+    const preview = photo ? '📷 Photo' + (text ? ': ' + text : '') : text;
+    await this.tell(o, { t: 'msg', pair: id, m, n: { title: this.name(s.profiles, h), body: clip(preview, 160), go: 'pair:' + id, tag: 'msg:' + id } });
     await this.tell(h, { t: 'msg', pair: id, m });
     return m;
   }
@@ -321,7 +356,7 @@ export class Pair extends DurableObject {
     await this.ctx.storage.put(key, m);
     const o = this.other(s.meta, h), id = s.meta.id;
     const ev = { t: 'react', pair: id, s: seqNo, by: h, emoji: emoji || null, rx: m.rx || null };
-    await this.tell(o, { ...ev, n: emoji && m.by === o ? { title: this.name(s.profiles, h) + ' reacted ' + emoji, body: 'To: ' + clip(m.text, 120), go: 'pair:' + id, tag: 'msg:' + id } : null });
+    await this.tell(o, { ...ev, n: emoji && m.by === o ? { title: this.name(s.profiles, h) + ' reacted ' + emoji, body: 'To: ' + clip(m.text || '📷 Photo', 120), go: 'pair:' + id, tag: 'msg:' + id } : null });
     await this.tell(h, ev);
     return { ok: true, rx: m.rx || null };
   }
@@ -532,9 +567,10 @@ async function readJson(req) {
 }
 
 /** Handles /s/* requests. `json(data, status)` adds CORS headers. */
-export async function social(req, env, url, json) {
+export async function social(req, env, url, json, cors = {}) {
   const path = url.pathname.slice(2); // drop "/s"
-  const body = req.method === 'POST' ? await readJson(req) : {};
+  const upload = req.method === 'POST' && /\/upload$/.test(path); // a photo: raw bytes, not JSON
+  const body = req.method === 'POST' && !upload ? await readJson(req) : {};
 
   if (path === '/signup' && req.method === 'POST') {
     const handle = String(body.handle || '').trim().toLowerCase().replace(/^@/, '');
@@ -630,14 +666,27 @@ export async function social(req, env, url, json) {
     return json({ ok: true });
   }
 
-  // a pair: /s/p/<id>/<action>
-  const pm = /^\/p\/([a-z0-9_.~]{7,41})\/([a-z]+)$/.exec(path);
+  // a pair: /s/p/<id>/<action>, and its photos: /s/p/<id>/file/<fid>
+  const pm = /^\/p\/([a-z0-9_.~]{7,41})\/([a-z]+)(?:\/([A-Za-z0-9_-]{10,40}))?$/.exec(path);
   if (pm) {
-    const [, pid, action] = pm;
+    const [, pid, action, fid] = pm;
     if (!pid.split('~').includes(me)) return json({ error: 'not found' }, 404);
     const conns = await meStub.connections();
     if (!conns[pid]) return json({ error: 'not found' }, 404);
     const p = pair(env, pid);
+    if (action === 'file' && fid && req.method === 'GET') {
+      const f = await p.file(fid);
+      if (!f) return json({ error: 'not found' }, 404);
+      return new Response(f.data, { headers: { ...cors, 'Content-Type': f.type, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
+    }
+    if (upload && action === 'upload') {
+      const bytes = await req.arrayBuffer();
+      if (bytes.byteLength > MAX_PHOTO) return json({ error: 'That photo is too big' }, 413);
+      const type = imageType(bytes);
+      if (!type) return json({ error: 'Only photos can be sent' }, 415);
+      const r = await p.upload(me, bytes, type);
+      return r.error ? json({ error: r.error }, r.status) : json(r);
+    }
     const done = r => (r && r.error ? json({ error: r.error }, r.status || 400) : json(r));
     if (action === 'state' && req.method === 'GET') return json(await p.state(me));
     if (action === 'messages' && req.method === 'GET') return json(await p.messages(me, parseInt(url.searchParams.get('before') || '0', 10) || 0));
@@ -645,8 +694,9 @@ export async function social(req, env, url, json) {
     if (req.method !== 'POST') return json({ error: 'not found' }, 404);
     if (action === 'send') {
       const text = cleanText(body.text);
-      if (!text) return json({ error: 'empty' }, 400);
-      return json(await p.send(me, text, body.cid, Number(body.re) || 0));
+      if (!text && !body.media) return json({ error: 'empty' }, 400);
+      const r = await p.send(me, text, body.cid, Number(body.re) || 0, body.media);
+      return r.error ? json({ error: r.error }, r.status || 400) : json(r);
     }
     if (action === 'react') {
       const emoji = typeof body.emoji === 'string' ? body.emoji.trim() : '';

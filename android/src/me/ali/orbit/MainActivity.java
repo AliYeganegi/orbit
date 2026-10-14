@@ -13,6 +13,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
@@ -39,6 +40,7 @@ public class MainActivity extends Activity {
 
     private static WeakReference<MainActivity> live = new WeakReference<>(null);
     private static volatile boolean resumed;
+    private static final int PICK_PHOTO = 3;
 
     /** True while the app is on screen: it shows People events itself, so the background check stays quiet. */
     static boolean isOpen() { return resumed; }
@@ -174,6 +176,20 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code != PICK_PHOTO) return;
+        Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
+        if (uri == null) { js("window.orbitPhoto && window.orbitPhoto(null)"); return; }
+        new Thread(() -> {
+            String json;
+            try { json = Photo.prepare(this, uri); } catch (Exception e) { json = "{\"error\":true}"; }
+            String arg = JSONObject.quote(json);
+            runOnUiThread(() -> js("window.orbitPhoto && window.orbitPhoto(JSON.parse(" + arg + "))"));
+        }).start();
+    }
+
+    @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
         if (code == 2) js("window.orbitSmsPermission && window.orbitSmsPermission(" + Sms.granted(this) + ")");
@@ -210,6 +226,17 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void sync(String planJson) {
             try { Scheduler.sync(MainActivity.this, planJson); } catch (Exception ignored) { }
+        }
+
+        /** Opens the system photo picker; the result comes back through window.orbitPhoto. */
+        @JavascriptInterface
+        public void pickPhoto() {
+            Intent i = Build.VERSION.SDK_INT >= 33
+                    ? new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*")
+                    : new Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*");
+            runOnUiThread(() -> {
+                try { startActivityForResult(i, PICK_PHOTO); } catch (Exception e) { js("window.orbitPhoto && window.orbitPhoto(null)"); }
+            });
         }
 
         @JavascriptInterface
