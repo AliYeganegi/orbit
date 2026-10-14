@@ -175,6 +175,42 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   await A.shot('people-13-edit-delete');
   A.ok('edit and delete own messages, live on the other phone');
 
+  // a long chat opens at the newest message; scrolling up shows a way back that counts new messages
+  const tokA = await A.p.evaluate(() => JSON.parse(localStorage.getItem('orbit.social')).token);
+  const pidAB = await A.G(`return g.Soc.open`);
+  const sendAs = (text) => fetch(API + '/s/p/' + pidAB + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokA }, body: JSON.stringify({ text }) });
+  for (let i = 1; i <= 30; i++) await sendAs('Message number ' + i);
+  await B.G(`g.nav.screen = 'people'`);
+  await B.p.click('.list-row:has-text("Ali")');
+  await B.p.waitForSelector('.msg:has-text("Message number 30")');
+  await B.p.waitForTimeout(1300);
+  const gap = () => B.p.evaluate(() => document.documentElement.scrollHeight - (scrollY + innerHeight));
+  assert.ok(await gap() < 150, 'opens at the newest message (gap ' + await gap() + ')');
+  assert.equal(await B.p.locator('.jump-latest').count(), 0);
+  await B.p.evaluate(() => scrollTo(0, 0));
+  await B.p.waitForSelector('.jump-latest');
+  await sendAs('Message number 31'); await sendAs('Message number 32');
+  await B.p.waitForSelector('.jump-latest .badge:has-text("2")', { timeout: 8000 });
+  assert.ok(await B.p.evaluate(() => scrollY) < 50, 'not pulled down while reading older messages');
+  await B.shot('people-14-latest-button');
+  await B.p.click('.jump-latest');
+  await B.p.waitForTimeout(900);
+  assert.ok(await gap() < 150, 'button goes to the newest message');
+  assert.equal(await B.p.locator('.jump-latest').count(), 0, 'button hides at the bottom');
+  A.ok('long chat opens at the end; "latest" button with a count of new messages');
+
+  // instant open: the People list and the chat come from the phone while the server is slow or unreachable
+  await B.p.waitForTimeout(1000); // let the copy be saved
+  await B.p.route(API + '/**', r => r.abort());
+  await B.p.reload();
+  await B.G(`g.go('people')`);
+  await B.p.waitForSelector('.list-row:has-text("Ali")', { timeout: 3000 });
+  await B.p.click('.list-row:has-text("Ali")');
+  await B.p.waitForSelector('.msg:has-text("Message number 32")', { timeout: 3000 });
+  await B.p.unroute(API + '/**');
+  B.errs.length = 0; // failed requests while offline are expected
+  A.ok('People and the chat show instantly from the phone, even offline');
+
   // badges: a message to someone who isn't looking shows up on Today and on More
   await B.G(`g.nav.screen = null; g.nav.tab = 'today'`);
   await A.p.fill('.composer textarea', 'Dinner at 8?');

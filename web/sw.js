@@ -1,6 +1,6 @@
 // Orbit service worker: offline cache + push notifications.
 // Bump VERSION whenever any app file changes so installed phones pick up the update.
-const VERSION = 'orbit-v12';
+const VERSION = 'orbit-v13';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'questions.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -9,7 +9,7 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== 'orbit-photos').map(k => caches.delete(k)))) // chat photos outlive app updates
     .then(() => self.clients.claim()));
 });
 

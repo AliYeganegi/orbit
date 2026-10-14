@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.13'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.14'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -929,9 +929,33 @@ async function socStart(acct) {
   await refreshMe();
   socNative(); socConnect(); socPushSync();
 }
+/* the People list and recent chats are kept on the phone, so they show instantly and refresh in the background */
+const CHAT_KEY = 'orbit.chatcache';
+function loadChatCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CHAT_KEY));
+    if (c && Soc.acct && c.handle === Soc.acct.handle) { Soc.me = c.me || null; Soc.chats = c.chats || {}; }
+  } catch (e) {}
+}
+function saveChatCache() {
+  try {
+    if (!Soc.acct) { localStorage.removeItem(CHAT_KEY); return; }
+    const chats = {};
+    for (const [k, c] of Object.entries(Soc.chats)) {
+      if (!c || !c.messages) continue;
+      const messages = c.messages.filter(m => m.s).slice(-60).map(({ _photo, ...m }) => (m.media && m.media.local ? { ...m, media: { ...m.media, local: undefined } } : m));
+      chats[k] = { ...c, messages, days: (c.days || []).slice(0, 30) };
+    }
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ handle: Soc.acct.handle, me: Soc.me, chats }));
+  } catch (e) {}
+}
+let chatSaveT;
+watch(() => [Soc.me, Soc.chats], () => { clearTimeout(chatSaveT); chatSaveT = setTimeout(saveChatCache, 800); }, { deep: true });
+
 function socSignOut(msg) {
   try { sock && sock.close(); } catch (e) {}
   Soc.acct = null; Soc.me = null; Soc.chats = {}; Soc.open = null; saveSoc(); socNative();
+  try { localStorage.removeItem(CHAT_KEY); caches.delete(PHOTO_CACHE); } catch (e) {}
   if (nav.screen === 'pair') nav.screen = 'people';
   if (msg) say(msg);
 }
@@ -952,6 +976,8 @@ function mergeSummary(st) {
 async function loadPair(id) {
   try {
     const st = await api('/p/' + id + '/state');
+    const old = Soc.chats[id];
+    if (old) st.messages.push(...old.messages.filter(m => !m.s)); // keep messages that are still sending
     Soc.chats[id] = st; mergeSummary(st);
     return st;
   } catch (e) {
@@ -984,6 +1010,7 @@ async function sendMsg(id, text, reply, photo) {
       if (!res.ok) { const e = new Error(d.error || 'The photo didn\'t upload'); e.status = res.status; throw e; }
       media = { fid: d.fid, width: photo.width, height: photo.height };
       Photos[d.fid] = local; // no need to download what we just sent
+      keepPhoto(d.fid, photo.blob);
     }
     const m = await api('/p/' + id + '/send', { text: text.trim(), cid, re: re.re, media });
     const i = c.messages.findIndex(x => x.cid === cid && !x.s);
@@ -1004,13 +1031,24 @@ function retryMsg(id, m) {
 
 /* photos: resized on the phone before upload; loaded with the login key, since only the two members may see them */
 const Photos = reactive({}); // fid -> object URL | 'loading' | 'error'
+const PHOTO_CACHE = 'orbit-photos';
+const photoKey = fid => 'https://orbit.photos/' + fid; // just a name in the phone's cache, never fetched
+async function photoCache() { try { return await caches.open(PHOTO_CACHE); } catch (e) { return null; } }
+async function keepPhoto(fid, blob) { const c = await photoCache(); if (c) c.put(photoKey(fid), new Response(blob, { headers: { 'Content-Type': blob.type || 'image/jpeg' } })).catch(() => {}); }
+async function forgetPhoto(fid) { const c = await photoCache(); if (c) c.delete(photoKey(fid)).catch(() => {}); }
 async function loadPhoto(pid, fid) {
   if (Photos[fid]) return;
   Photos[fid] = 'loading';
   try {
-    const res = await fetch(PUSH_URL + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + Soc.acct.token } });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    Photos[fid] = URL.createObjectURL(await res.blob());
+    const c = await photoCache(), hit = c && await c.match(photoKey(fid));
+    let blob = hit ? await hit.blob() : null;
+    if (!blob) {
+      const res = await fetch(PUSH_URL + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + Soc.acct.token } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      blob = await res.blob();
+      keepPhoto(fid, blob);
+    }
+    Photos[fid] = URL.createObjectURL(blob);
   } catch (e) { Photos[fid] = 'error'; }
 }
 const canPhoto = !AN || !!AN.pickPhoto; // Android needs app 1.12 for the photo picker
@@ -1058,7 +1096,7 @@ async function deleteMsg(id, m) {
   const c = Soc.chats[id], i = c.messages.indexOf(m);
   if (i < 0) return;
   c.messages.splice(i, 1, { s: m.s, by: m.by, at: m.at, deleted: Date.now() });
-  try { await api('/p/' + id + '/delete', { s: m.s }); say('Message deleted'); }
+  try { await api('/p/' + id + '/delete', { s: m.s }); if (m.media && m.media.fid) forgetPhoto(m.media.fid); say('Message deleted'); }
   catch (e) { const j = c.messages.findIndex(x => x.s === m.s); if (j >= 0) c.messages.splice(j, 1, m); say(netErr(e)); }
 }
 const REACTS = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
@@ -1113,6 +1151,7 @@ function onSocEvent(ev) {
   if (ev.t === 'edit' || ev.t === 'del') {
     const i = c ? c.messages.findIndex(x => x.s === (ev.m ? ev.m.s : ev.s)) : -1;
     const next = ev.t === 'edit' ? ev.m : { s: ev.s, by: i >= 0 ? c.messages[i].by : '', at: i >= 0 ? c.messages[i].at : 0, deleted: Date.now() };
+    if (ev.t === 'del' && i >= 0 && c.messages[i].media && c.messages[i].media.fid) forgetPhoto(c.messages[i].media.fid);
     if (i >= 0) c.messages.splice(i, 1, { ...next, rx: ev.t === 'edit' ? c.messages[i].rx : undefined });
     if (p && p.last && p.last.s === next.s) p.last = next;
     return;
@@ -1456,7 +1495,7 @@ window.orbitGo = where => {
   if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
 };
 drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
-if (Soc.acct) { socNative(); refreshMe().then(socPushSync); socConnect(); }
+if (Soc.acct) { loadChatCache(); socNative(); refreshMe().then(socPushSync); socConnect(); }
 
 /* ================= base components ================= */
 const Ic = {
@@ -3251,8 +3290,31 @@ const PairView = {
     // chat
     const draft = ref(''), box = ref(null);
     const toBottom = (smooth) => nextTick(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }));
-    watch(() => st.value && st.value.messages.length, (n, o) => { if (tab.value === 'chat') { toBottom(!!o); markRead(id); } });
-    watch(tab, t => { if (t === 'chat') { toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
+    // the chat sticks to its newest message (as photos load, messages arrive or the keyboard opens)
+    // unless the reader has scrolled up; then a button offers the way back, counting what's new
+    const atBottom = ref(true), newCount = ref(0), chatEl = ref(null);
+    const nearBottom = () => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 140;
+    let pinUntil = Date.now() + 900; // while the screen opens (its transition scrolls to the top), stay pinned to the end
+    function onScroll() {
+      if (tab.value !== 'chat') return;
+      if (Date.now() < pinUntil) { atBottom.value = true; return; }
+      atBottom.value = nearBottom(); if (atBottom.value) newCount.value = 0;
+    }
+    addEventListener('scroll', onScroll, { passive: true });
+    let chatRo = null;
+    watch(chatEl, el => {
+      if (chatRo) chatRo.disconnect();
+      if (el && window.ResizeObserver) { chatRo = new ResizeObserver(() => { if (atBottom.value || Date.now() < pinUntil) window.scrollTo(0, document.documentElement.scrollHeight); }); chatRo.observe(el); }
+    });
+    onBeforeUnmount(() => { removeEventListener('scroll', onScroll); if (chatRo) chatRo.disconnect(); });
+    function latest() { atBottom.value = true; newCount.value = 0; toBottom(true); }
+    watch(() => st.value && st.value.messages.length, (n, o) => {
+      if (tab.value !== 'chat' || !o || n <= o) return;
+      const last = st.value.messages[n - 1];
+      if (atBottom.value || (last && last.by === meH.value)) latest(); else newCount.value += n - o;
+      markRead(id);
+    });
+    watch(tab, t => { if (t === 'chat') { atBottom.value = true; pinUntil = Date.now() + 900; toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
     const sel = ref(null), replyTo = ref(null), flash = ref(null), pending = ref(null), viewer = ref(null), comp = ref(null);
     const editing = ref(null), delAsk = ref(null);
     function startEdit(m) {
@@ -3336,7 +3398,9 @@ const PairView = {
       try {
         const more = await api('/p/' + id + '/messages?before=' + first.s);
         if (more.length < 60) noMore.value = true;
+        const fromEnd = document.documentElement.scrollHeight - window.scrollY; // keep the reader's place
         c.messages.unshift(...more.filter(m => !c.messages.some(x => x.s === m.s)));
+        nextTick(() => window.scrollTo(0, document.documentElement.scrollHeight - fromEnd));
       } catch (e) { say(netErr(e)); } finally { older.value = false; }
     }
 
@@ -3371,7 +3435,7 @@ const PairView = {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
     <header class="top sm">
@@ -3440,7 +3504,7 @@ const PairView = {
       </template>
 
       <template v-else>
-        <div class="chat">
+        <div class="chat" ref="chatEl">
           <button v-if="st.messages.length >= 60 && !noMore" class="link-btn" style="display:block;margin:6px auto" :disabled="older" @click="loadOlder">{{ older ? 'Loading…' : 'Load earlier messages' }}</button>
           <div v-if="!st.messages.length" class="muted" style="text-align:center;padding:40px 10px">Say hi to {{ nm }} 👋</div>
           <template v-for="r in rows" :key="r.key">
@@ -3474,6 +3538,8 @@ const PairView = {
             </template>
           </template>
         </div>
+        <Transition name="fade"><button v-if="!atBottom && st.messages.length" class="jump-latest" @click="latest" aria-label="Go to the latest message">
+          <Ic n="chevron-down" :s="22"/><span v-if="newCount" class="badge unread">{{ newCount }}</span></button></Transition>
         <div class="composer" ref="comp">
           <div v-if="editing" class="reply-bar"><Ic n="pencil" :s="15"/><div class="grow"><b>Editing</b><span>{{ editing.text || '📷 Photo caption' }}</span></div>
             <button @pointerdown.prevent @mousedown.prevent @click="cancelEdit" aria-label="Cancel editing"><Ic n="x" :s="16"/></button></div>

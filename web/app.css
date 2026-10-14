@@ -898,3 +898,10 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 .msg .txt.gone { display: flex; align-items: center; gap: 5px; font-style: italic; font-size: 14px; }
 .msg.editing { outline: 2px solid color-mix(in srgb, var(--c-people) 60%, transparent); outline-offset: 2px; }
 .msg-tools .tool.danger { color: var(--c-danger); }
+
+/* chat: back to the latest message */
+.jump-latest { position: fixed; right: max(18px, calc(50% - 250px)); bottom: calc(var(--composer-h, 62px) + 104px + env(safe-area-inset-bottom)); z-index: 41;
+  width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line-2); box-shadow: var(--shadow); }
+.kb .jump-latest { bottom: calc(var(--composer-h, 62px) + var(--kbb, 0px) + 18px); }
+.jump-latest .badge { position: absolute; top: -6px; right: -4px; height: 20px; min-width: 20px; font-size: 11px; padding: 0 5px; }
