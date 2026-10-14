@@ -10,8 +10,9 @@ import { DurableObject } from 'cloudflare:workers';
 import { sendPush, b64u, validSubscription } from './webpush.js';
 import '../../web/schedule.js';
 import { social } from './social.js';
+import { admin } from './admin.js';
 
-export { User, Pair } from './social.js';
+export { User, Pair, Registry } from './social.js';
 
 const { nextWater, nextAt } = globalThis.OrbitSchedule;
 const MAX_RULES = 60;
@@ -214,6 +215,7 @@ export default {
       if (url.pathname === '/health') return json({ ok: true }, 200, h);
       if (url.pathname === '/vapid') return json({ key: env.VAPID_PUBLIC }, 200, h);
       if (url.pathname.startsWith('/s/')) return await social(req, env, url, (data, status = 200) => json(data, status, h));
+      if (url.pathname.startsWith('/admin/')) return await admin(req, env, url, (data, status = 200) => json(data, status, h));
 
       if (url.pathname === '/register' && req.method === 'POST') {
         const body = await readJson(req);

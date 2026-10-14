@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Orbit Admin</title>
+<link rel="icon" type="image/png" href="../icon-192.png">
+<style>
+:root { --bg: #f4f5f8; --surface: #fff; --surface-2: #eef0f4; --line: #e3e5eb; --text: #14161c; --muted: #6b7080; --acc: #ec4899; --acc-2: #7c6cff; --danger: #e5484d; --ok: #16a34a; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0b0c10; --surface: #15171d; --surface-2: #1d2028; --line: #262a34; --text: #f3f4f7; --muted: #8a8fa0; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14.5px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: 0; background: none; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px 60px; }
+header { display: flex; align-items: center; gap: 12px; padding: 18px 0 14px; flex-wrap: wrap; }
+header h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
+header .grow { flex: 1; }
+.logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--acc-2), var(--acc)); display: grid; place-items: center; color: #fff; font-size: 18px; }
+.btn { height: 36px; padding: 0 14px; border-radius: 10px; background: var(--surface-2); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn.primary { background: var(--acc); color: #fff; }
+.btn.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.btn.sm { height: 30px; padding: 0 10px; font-size: 13px; border-radius: 8px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.field { height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); outline: none; min-width: 0; }
+.field:focus { border-color: var(--acc); }
+textarea.field { height: auto; padding: 10px 12px; resize: vertical; }
+.tabs { display: flex; gap: 4px; background: var(--surface-2); padding: 4px; border-radius: 12px; width: fit-content; margin: 6px 0 16px; }
+.tabs button { padding: 7px 16px; border-radius: 9px; font-weight: 600; color: var(--muted); }
+.tabs button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.stat small { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.stat b { display: block; font-size: 24px; letter-spacing: -.02em; margin-top: 2px; }
+.stat span { color: var(--muted); font-size: 12.5px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.toolbar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+.toolbar .grow { flex: 1; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 650; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: color-mix(in srgb, var(--acc) 5%, transparent); }
+.who { display: flex; align-items: center; gap: 10px; min-width: 160px; }
+.av { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--acc) 14%, var(--surface-2)); font-size: 17px; flex-shrink: 0; }
+.muted { color: var(--muted); }
+.sm { font-size: 12.5px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 650; background: var(--surface-2); white-space: nowrap; }
+.badge.acc { background: color-mix(in srgb, var(--acc) 15%, transparent); color: var(--acc); }
+.badge.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.badge.warn { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #d97706; }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+.modal-bg { position: fixed; inset: 0; background: rgba(5, 6, 10, .55); display: flex; align-items: flex-start; justify-content: center; padding: 40px 12px; z-index: 10; overflow-y: auto; }
+.modal { background: var(--surface); border-radius: 18px; width: 100%; max-width: 720px; padding: 20px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.modal h2 { margin: 0 0 4px; font-size: 19px; display: flex; align-items: center; gap: 10px; }
+.modal h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 20px 0 8px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.hist { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; }
+.hist div { padding: 9px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; }
+.hist div:last-child { border-bottom: 0; }
+.hist .d { color: var(--muted); font-size: 12.5px; white-space: nowrap; width: 84px; flex-shrink: 0; }
+.hist .t { flex: 1; }
+.qlist div.q { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.qlist div.q:last-child { border-bottom: 0; }
+.qlist .q.off .t { text-decoration: line-through; color: var(--muted); }
+.qlist .t { flex: 1; }
+.qlist code { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.login { max-width: 380px; margin: 12vh auto 0; text-align: center; }
+.login .field { width: 100%; margin: 14px 0 10px; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 12px; font-weight: 600; z-index: 20; max-width: 90vw; }
+.err { color: var(--danger); font-weight: 600; font-size: 13.5px; }
+@media (max-width: 640px) { .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="../vue.js"></script>
+<script src="../questions.js"></script>
+<script>
+const { createApp, reactive, ref, computed, watch } = Vue;
+const API = new URLSearchParams(location.search).get('api') || 'https://orbit-push.aliyeganegi.workers.dev';
+const KEY = 'orbit.admin';
+const Q = window.OrbitQuestions;
+const TYPE = Object.fromEntries(Q.TYPES.map(t => [t.id, t]));
+const POOL_NAMES = { friends: 'Friends', close: 'Best friends (extra)', couple: 'Couples (all)', dating: 'Dating (extra)', engaged: 'Engaged (extra)', married: 'Married (extra)', family: 'Family' };
+const TIERS = { 1: 'Light', 2: 'Personal', 3: 'Deep' };
+
+const st = reactive({
+  token: (() => { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } })(),
+  data: null, bank: { custom: [], disabled: [] }, loading: false, error: '', toast: '',
+});
+let toastT;
+const say = m => { st.toast = m; clearTimeout(toastT); toastT = setTimeout(() => { st.toast = ''; }, 2600); };
+async function api(path, body, method) {
+  const res = await fetch(API + '/admin' + path, {
+    method: method || (body ? 'POST' : 'GET'),
+    headers: { 'Content-Type': 'application/json', Authorization: 'Admin ' + st.token },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { st.token = ''; try { localStorage.removeItem(KEY); } catch (e) {} throw new Error('Wrong or expired admin token'); }
+  if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+  return data;
+}
+async function load() {
+  st.loading = true; st.error = '';
+  try { const [d, b] = await Promise.all([api('/overview'), api('/bank')]); st.data = d; st.bank = b; }
+  catch (e) { st.error = e.message; } finally { st.loading = false; }
+}
+const ago = ms => {
+  if (!ms) return '—';
+  const s = (Date.now() - ms) / 1000;
+  if (s < 90) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 86400 * 30) return Math.round(s / 86400) + ' d ago';
+  return new Date(ms).toLocaleDateString();
+};
+const date = ms => (ms ? new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
+const dt = ms => (ms ? new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+const nameOf = (p, h) => (p && p.profiles && p.profiles[h] && p.profiles[h].name) || '@' + h;
+const emojiOf = (p, h) => (p && p.profiles && p.profiles[h] && p.profiles[h].emoji) || '🙂';
+
+const App = {
+  setup() {
+    const tab = ref('pairs'), q = ref(''), tokenIn = ref('');
+    function signIn() { st.token = tokenIn.value.trim(); try { localStorage.setItem(KEY, st.token); } catch (e) {} tokenIn.value = ''; load(); }
+    function signOut() { st.token = ''; st.data = null; try { localStorage.removeItem(KEY); } catch (e) {} }
+    if (st.token) load();
+
+    const stats = computed(() => {
+      const d = st.data; if (!d) return [];
+      const day = Date.now() - 864e5, asked = d.pairs.reduce((n, p) => n + (p.questions || 0), 0), both = d.pairs.reduce((n, p) => n + (p.both || 0), 0);
+      const byType = Q.TYPES.map(t => ({ ...t, n: d.pairs.filter(p => p.type === t.id).length })).filter(t => t.n);
+      return [
+        { l: 'Users', v: d.users.length, s: d.users.filter(u => u.seen > day).length + ' active in 24 h' },
+        { l: 'Relations', v: d.pairs.length, s: byType.map(t => t.e + ' ' + t.n).join('  ') || 'none typed yet' },
+        { l: 'Questions asked', v: asked, s: both + ' answered by both' + (asked ? ' (' + Math.round(both / asked * 100) + '%)' : '') },
+        { l: 'Messages', v: d.pairs.reduce((n, p) => n + (p.messages || 0), 0), s: 'texts stay private' },
+      ];
+    });
+    const match = (...xs) => !q.value.trim() || xs.join(' ').toLowerCase().includes(q.value.trim().toLowerCase().replace(/^@/, ''));
+    const users = computed(() => (st.data ? st.data.users.filter(u => match(u.handle, u.name)).sort((a, b) => (b.seen || 0) - (a.seen || 0)) : []));
+    const pairs = computed(() => (st.data ? st.data.pairs.filter(p => match(p.id, ...(p.members || []).map(h => nameOf(p, h)), p.type || '')).sort((a, b) => (b.created || 0) - (a.created || 0)) : []));
+
+    // user editing
+    const eu = ref(null);
+    async function openUser(u) { try { eu.value = { ...(await api('/users/' + u.handle)), edit: { name: u.name, emoji: u.emoji } }; } catch (e) { say(e.message); } }
+    async function saveUser() {
+      try { await api('/users/' + eu.value.handle, eu.value.edit); say('Saved'); eu.value = null; load(); } catch (e) { say(e.message); }
+    }
+    async function delUser(h) {
+      if (prompt('This deletes @' + h + ' with all their connections, chats and answers, for everyone.\nType the ID to confirm:') !== h) return;
+      try { await api('/users/' + h, null, 'DELETE'); say('@' + h + ' deleted'); eu.value = null; load(); } catch (e) { say(e.message); }
+    }
+
+    // pair details
+    const ep = ref(null), qsFor = ref([]), qPick = ref(''), qSearch = ref(''), busy = ref(false);
+    async function openPair(p) {
+      try {
+        const info = await api('/pairs/' + p.id);
+        ep.value = { ...info, edit: { type: info.type || '', time: info.time, tz: info.tz } };
+        qPick.value = ''; qSearch.value = '';
+        qsFor.value = info.type ? await api('/questions/' + info.type) : [];
+      } catch (e) { say(e.message); }
+    }
+    async function savePair() {
+      const e = ep.value.edit, b = {};
+      if ((e.type || null) !== (ep.value.type || null)) b.type = e.type || null;
+      if (e.time !== ep.value.time) b.time = e.time;
+      if (e.tz !== ep.value.tz) b.tz = e.tz;
+      if (!Object.keys(b).length) return say('Nothing changed');
+      busy.value = true;
+      try { await api('/pairs/' + ep.value.id, b); await openPair(ep.value); say('Saved'); load(); } catch (err) { say(err.message); } finally { busy.value = false; }
+    }
+    async function askNow() {
+      busy.value = true;
+      try { const r = await api('/pairs/' + ep.value.id + '/ask', { qid: qPick.value || null }); await openPair(ep.value); say('Today\'s question: ' + r.text); load(); }
+      catch (e) { say(e.message); } finally { busy.value = false; }
+    }
+    async function delPair() {
+      if (!confirm('Remove this connection? Their chat and answers are deleted for both.')) return;
+      try { await api('/pairs/' + ep.value.id, null, 'DELETE'); say('Connection removed'); ep.value = null; load(); } catch (e) { say(e.message); }
+    }
+    const qOptions = computed(() => {
+      const s = qSearch.value.trim().toLowerCase();
+      return qsFor.value.filter(x => !s || x.text.toLowerCase().includes(s)).slice(0, 200);
+    });
+    const todayOf = p => p.days && p.days[0] && p.days[0].day === p.today ? p.days[0] : null;
+
+    // question bank
+    const pool = ref('couple'), tier = ref(0), bq = ref(''), add = reactive({ pool: 'couple', tier: 1, text: '' });
+    const bankList = computed(() => {
+      const off = new Set(st.bank.disabled), s = bq.value.trim().toLowerCase();
+      const built = [1, 2, 3].flatMap(t => (Q.POOLS[pool.value][t] || []).map((text, i) => ({ id: pool.value + '.' + t + '.' + i, tier: t, text })));
+      const custom = st.bank.custom.filter(c => c.pool === pool.value).map(c => ({ ...c, custom: true }));
+      return custom.concat(built).filter(x => (!tier.value || x.tier === tier.value) && (!s || x.text.toLowerCase().includes(s))).map(x => ({ ...x, off: off.has(x.id) }));
+    });
+    const poolCount = p => [1, 2, 3].reduce((n, t) => n + (Q.POOLS[p][t] || []).length, 0) + st.bank.custom.filter(c => c.pool === p).length;
+    async function bank(body, msg) { try { st.bank = await api('/bank', body); if (msg) say(msg); } catch (e) { say(e.message); } }
+    async function addQ() { await bank({ add: { ...add } }, 'Question added'); add.text = ''; }
+    const usedIn = p => Q.TYPES.filter(t => t.pools.includes(p)).map(t => t.e + ' ' + t.l).join(', ');
+
+    return { st, tab, q, tokenIn, signIn, signOut, load, stats, users, pairs, eu, openUser, saveUser, delUser, ep, openPair, savePair, askNow, delPair, qsFor, qPick, qSearch, qOptions, busy, todayOf,
+      pool, tier, bq, add, bankList, poolCount, bank, addQ, usedIn, TYPE, TYPES: Q.TYPES, POOL_NAMES, TIERS, ago, date, dt, nameOf, emojiOf, API };
+  },
+  template: `
+  <div class="wrap">
+    <div v-if="!st.token" class="login">
+      <div class="logo" style="width:54px;height:54px;font-size:28px;margin:0 auto">🪐</div>
+      <h1 style="margin:14px 0 4px">Orbit admin</h1>
+      <div class="muted">Enter the admin token (the ADMIN_TOKEN secret on the Worker).</div>
+      <form @submit.prevent="signIn"><input class="field" type="password" v-model="tokenIn" placeholder="Admin token" autocomplete="current-password"><button class="btn primary" style="width:100%;justify-content:center;height:42px" :disabled="tokenIn.trim().length < 24">Sign in</button></form>
+      <p v-if="st.error" class="err">{{ st.error }}</p>
+    </div>
+
+    <template v-else>
+      <header>
+        <div class="logo">🪐</div><h1>Orbit admin</h1>
+        <div class="grow"></div>
+        <input class="field" v-model="q" placeholder="Search name, @ID, type" style="width:220px">
+        <button class="btn" @click="load" :disabled="st.loading">{{ st.loading ? 'Loading…' : '↻ Refresh' }}</button>
+        <button class="btn" @click="signOut">Sign out</button>
+      </header>
+      <p v-if="st.error" class="err">{{ st.error }}</p>
+
+      <div v-if="st.data" class="stats"><div v-for="s in stats" :key="s.l" class="stat"><small>{{ s.l }}</small><b>{{ s.v }}</b><span>{{ s.s }}</span></div></div>
+
+      <div class="tabs">
+        <button :class="{on: tab === 'pairs'}" @click="tab = 'pairs'">Relations</button>
+        <button :class="{on: tab === 'users'}" @click="tab = 'users'">Users</button>
+        <button :class="{on: tab === 'bank'}" @click="tab = 'bank'">Questions</button>
+      </div>
+
+      <div v-if="tab === 'pairs' && st.data" class="card scroll">
+        <table>
+          <thead><tr><th>People</th><th>Relationship</th><th class="hide-sm">Question time</th><th>Questions</th><th class="hide-sm">Messages</th><th class="hide-sm">Since</th></tr></thead>
+          <tbody>
+            <tr v-for="p in pairs" :key="p.id" class="click" @click="openPair(p)">
+              <td><div class="who" v-for="h in p.members" :key="h" style="margin:2px 0"><span class="av" style="width:26px;height:26px;font-size:14px">{{ emojiOf(p, h) }}</span><span>{{ nameOf(p, h) }} <span class="muted sm">@{{ h }}</span></span></div></td>
+              <td><span v-if="p.type" class="badge acc">{{ TYPE[p.type].e }} {{ TYPE[p.type].l }}</span>
+                <span v-else-if="p.proposal" class="badge warn">proposed: {{ TYPE[p.proposal.type].l }}</span><span v-else class="badge">not chosen</span></td>
+              <td class="hide-sm">{{ p.time }} <span class="muted sm">{{ p.tz }}</span></td>
+              <td>{{ p.questions }} <span class="muted sm">· {{ p.both }} both</span><div v-if="p.lastDay" class="muted sm">last {{ p.lastDay }}</div></td>
+              <td class="hide-sm">{{ p.messages }}</td>
+              <td class="hide-sm muted">{{ date(p.created) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!pairs.length" class="empty">No relations{{ q ? ' match' : ' yet' }}.</div>
+      </div>
+
+      <div v-if="tab === 'users' && st.data" class="card scroll">
+        <table>
+          <thead><tr><th>User</th><th>Connections</th><th>Last seen</th><th class="hide-sm">Joined</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="u in users" :key="u.handle" class="click" @click="openUser(u)">
+              <td><div class="who"><span class="av">{{ u.emoji }}</span><div>{{ u.name }}<div class="muted sm">@{{ u.handle }}</div></div></div></td>
+              <td>{{ u.connections }}</td>
+              <td>{{ ago(u.seen) }}</td>
+              <td class="hide-sm muted">{{ date(u.created) }}</td>
+              <td style="text-align:right"><button class="btn sm" @click.stop="openUser(u)">Edit</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!users.length" class="empty">No users{{ q ? ' match' : ' yet' }}. Accounts made before the admin panel show up the next time they open the app.</div>
+      </div>
+
+      <div v-if="tab === 'bank'" class="card">
+        <div class="toolbar">
+          <select class="field" v-model="pool"><option v-for="(n, p) in POOL_NAMES" :key="p" :value="p">{{ n }} ({{ poolCount(p) }})</option></select>
+          <select class="field" v-model.number="tier"><option :value="0">All depths</option><option v-for="(n, t) in TIERS" :key="t" :value="+t">{{ n }}</option></select>
+          <input class="field grow" v-model="bq" placeholder="Search questions">
+        </div>
+        <div class="toolbar sm muted" style="padding:8px 12px">Used by: {{ usedIn(pool) }} · hidden questions are skipped for everyone</div>
+        <div class="qlist" style="max-height:62vh;overflow-y:auto">
+          <div v-for="x in bankList" :key="x.id" class="q" :class="{off: x.off}">
+            <span class="badge" :class="{acc: x.custom}">{{ x.custom ? 'Custom' : TIERS[x.tier] }}</span>
+            <span class="t">{{ x.text }}</span>
+            <code class="hide-sm">{{ x.id }}</code>
+            <button v-if="x.custom" class="btn sm danger" @click="bank({remove: x.id}, 'Removed')">Delete</button>
+            <button v-else class="btn sm" @click="bank({hide: x.id, on: !x.off}, x.off ? 'Shown again' : 'Hidden')">{{ x.off ? 'Show' : 'Hide' }}</button>
+          </div>
+          <div v-if="!bankList.length" class="empty">No questions match.</div>
+        </div>
+        <div class="toolbar" style="border-top:1px solid var(--line);border-bottom:0">
+          <b>Add a question</b>
+          <select class="field" v-model="add.pool"><option v-for="(n, p) in POOL_NAMES" :key="p" :value="p">{{ n }}</option></select>
+          <select class="field" v-model.number="add.tier"><option v-for="(n, t) in TIERS" :key="t" :value="+t">{{ n }}</option></select>
+          <input class="field grow" v-model="add.text" maxlength="200" placeholder="What's a small thing I do that makes your day?" @keydown.enter="add.text.trim() && addQ()">
+          <button class="btn primary" :disabled="!add.text.trim()" @click="addQ">Add</button>
+        </div>
+      </div>
+    </template>
+
+    <div v-if="ep" class="modal-bg" @click.self="ep = null">
+      <div class="modal">
+        <h2><span v-for="h in ep.members" :key="h" class="av">{{ emojiOf(ep, h) }}</span>{{ ep.members.map(h => nameOf(ep, h)).join(' & ') }}</h2>
+        <div class="muted sm">{{ ep.members.map(h => '@' + h).join(' · ') }} · connected {{ date(ep.created) }} · {{ ep.messages }} messages · next question {{ dt(ep.next) }}</div>
+        <div v-if="ep.proposal" class="sm" style="margin-top:8px"><span class="badge warn">@{{ ep.proposal.by }} proposed {{ TYPE[ep.proposal.type].l }}, waiting for the other</span></div>
+
+        <h3>Settings</h3>
+        <div class="row">
+          <label>Relationship<select class="field" v-model="ep.edit.type"><option value="">Not chosen</option><option v-for="t in TYPES" :key="t.id" :value="t.id">{{ t.e }} {{ t.l }}</option></select></label>
+          <label>Daily question at<input class="field" type="time" v-model="ep.edit.time"></label>
+          <label>Time zone<input class="field" v-model="ep.edit.tz" style="width:170px"></label>
+          <button class="btn primary" style="align-self:flex-end" :disabled="busy" @click="savePair">Save</button>
+        </div>
+        <div class="muted sm" style="margin-top:6px">Setting the type here skips the "both must accept" step. Their apps update; nobody gets a notification.</div>
+
+        <template v-if="ep.type">
+          <h3>Today's question</h3>
+          <div v-if="todayOf(ep)" style="margin-bottom:8px">“{{ todayOf(ep).text }}” <span class="muted sm">· answered by {{ todayOf(ep).answered.length ? todayOf(ep).answered.map(h => nameOf(ep, h)).join(', ') : 'nobody yet' }}</span></div>
+          <div v-else class="muted" style="margin-bottom:8px">Not asked yet today.</div>
+          <div class="row">
+            <input class="field" v-model="qSearch" placeholder="Search a question to send…" style="flex:1;min-width:180px">
+            <select class="field" v-model="qPick" style="flex:2;min-width:220px"><option value="">A new random question</option><option v-for="x in qOptions" :key="x.id" :value="x.id">{{ x.text }}</option></select>
+            <button class="btn" :disabled="busy || (todayOf(ep) && todayOf(ep).answered.length > 0)" @click="askNow">{{ todayOf(ep) ? 'Replace today\\'s' : 'Ask now' }}</button>
+          </div>
+          <div class="muted sm" style="margin-top:6px">Both get a notification. Today's question can only be replaced while nobody has answered it.</div>
+        </template>
+
+        <h3>Question history ({{ ep.days.length }})</h3>
+        <div v-if="ep.days.length" class="hist"><div v-for="d in ep.days" :key="d.day"><span class="d">{{ d.day }}</span><span class="t">{{ d.text }}</span>
+          <span class="badge" :class="{ok: d.answered.length === 2}">{{ d.answered.length === 2 ? 'both' : d.answered.length ? nameOf(ep, d.answered[0]) : 'none' }}</span></div></div>
+        <div v-else class="muted">No questions yet.</div>
+        <div class="muted sm" style="margin-top:6px">Answers and messages are private to the two of them; the admin only sees who answered.</div>
+
+        <div class="row" style="margin-top:22px;justify-content:space-between"><button class="btn danger" @click="delPair">Remove connection</button><button class="btn" @click="ep = null">Close</button></div>
+      </div>
+    </div>
+
+    <div v-if="eu" class="modal-bg" @click.self="eu = null">
+      <div class="modal" style="max-width:480px">
+        <h2><span class="av">{{ eu.emoji }}</span>@{{ eu.handle }}</h2>
+        <div class="muted sm">{{ Object.keys(eu.conns).length }} connections · {{ Object.keys(eu.inReq).length }} incoming, {{ Object.keys(eu.outReq).length }} sent requests · notifications {{ eu.push ? 'on (iPhone/web)' : 'off or Android' }} · {{ eu.tz }}</div>
+        <h3>Profile</h3>
+        <div class="row"><label>Emoji<input class="field" v-model="eu.edit.emoji" style="width:70px;text-align:center"></label><label style="flex:1">Name<input class="field" v-model="eu.edit.name" maxlength="40"></label>
+          <button class="btn primary" style="align-self:flex-end" :disabled="!eu.edit.name.trim()" @click="saveUser">Save</button></div>
+        <div class="row" style="margin-top:22px;justify-content:space-between"><button class="btn danger" @click="delUser(eu.handle)">Delete user</button><button class="btn" @click="eu = null">Close</button></div>
+      </div>
+    </div>
+    <div v-if="st.toast" class="toast">{{ st.toast }}</div>
+  </div>`,
+};
+createApp(App).mount('#app');
+</script>
+</body>
+</html>

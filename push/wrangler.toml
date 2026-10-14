@@ -28,3 +28,12 @@ class_name = "Pair"
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["User", "Pair"]
+
+# admin panel (web/admin): directory of users and pairs, question bank changes
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "Registry"
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Registry"]

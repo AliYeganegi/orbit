@@ -15,6 +15,7 @@ rm -rf build && mkdir -p build/gen build/classes build/dex build/assets
 # web UI is shared with the iPhone PWA; service worker and PWA icons are not needed in the APK
 cp -r ../web build/assets/www
 rm -f build/assets/www/sw.js build/assets/www/manifest.webmanifest build/assets/www/icon-*.png
+rm -rf build/assets/www/admin # the admin panel is web only
 "$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -I "$JAR" --manifest AndroidManifest.xml -A build/assets build/res.zip \
   --java build/gen --min-sdk-version 26 --target-sdk-version 34 \

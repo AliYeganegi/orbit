@@ -41,8 +41,50 @@ function cleanProfile(b) {
 }
 
 const label = p => p.name || '@' + p.handle;
-const user = (env, h) => env.USER.get(env.USER.idFromName(h));
-const pair = (env, id) => env.PAIR.get(env.PAIR.idFromName(id));
+export const user = (env, h) => env.USER.get(env.USER.idFromName(h));
+export const pair = (env, id) => env.PAIR.get(env.PAIR.idFromName(id));
+export const registry = env => env.REGISTRY.get(env.REGISTRY.idFromName('main'));
+export { typeOf, cleanProfile, sha256, todayIn };
+
+/* ================================================================ registry */
+
+/**
+ * The admin's view of everything. Durable Objects can't be listed by name, so users and pairs are
+ * recorded here as they're created (and when an existing user next opens the app). It also holds the
+ * admin's question bank changes: extra questions and hidden built-in ones.
+ */
+export class Registry extends DurableObject {
+  async touchUser(h, p, pids) {
+    const cur = await this.ctx.storage.get('u:' + h), now = Date.now();
+    const changed = !cur || cur.name !== p.name || cur.emoji !== p.emoji || now - (cur.seen || 0) > 10 * 60e3;
+    if (changed) await this.ctx.storage.put('u:' + h, { ...(cur || { created: now }), handle: h, name: p.name, emoji: p.emoji, seen: now });
+    for (const id of pids || []) if (!(await this.ctx.storage.get('p:' + id))) await this.ctx.storage.put('p:' + id, { id, members: id.split('~'), created: now });
+  }
+
+  async removeUser(h) { await this.ctx.storage.delete('u:' + h); }
+
+  async putPair(id, data) {
+    const cur = (await this.ctx.storage.get('p:' + id)) || { id, members: id.split('~'), created: Date.now() };
+    await this.ctx.storage.put('p:' + id, { ...cur, ...data });
+  }
+
+  async removePair(id) { await this.ctx.storage.delete('p:' + id); }
+
+  async list(prefix) { return [...(await this.ctx.storage.list({ prefix, limit: 5000 })).values()]; }
+
+  async bank() { return (await this.ctx.storage.get('bank')) || { custom: [], disabled: [] }; }
+
+  async setBank(b) { await this.ctx.storage.put('bank', b); return b; }
+}
+
+/** All questions a relationship type can get: the built-in pools plus admin-added ones, minus hidden ones. */
+export function questionsFor(type, bank) {
+  const t = typeOf(type);
+  if (!t) return [];
+  const off = new Set(bank.disabled || []);
+  const custom = (bank.custom || []).filter(c => t.pools.includes(c.pool)).map(c => ({ id: c.id, tier: c.tier, text: c.text }));
+  return Q.forType(type).concat(custom).filter(q => !off.has(q.id));
+}
 
 /* ================================================================ user */
 
@@ -185,6 +227,7 @@ export class Pair extends DurableObject {
       profiles: { [a.handle]: { name: a.name, emoji: a.emoji }, [b.handle]: { name: b.name, emoji: b.emoji } },
       mseq: 0, read: {}, asked: [],
     });
+    await registry(this.env).putPair(id, { members: [a.handle, b.handle], type: null, created: Date.now() });
   }
 
   async meta() { return this.ctx.storage.get('meta'); }
@@ -278,6 +321,7 @@ export class Pair extends DurableObject {
       const first = !meta.type;
       meta.type = type; meta.proposal = null;
       await this.ctx.storage.put('meta', meta);
+      await registry(this.env).putPair(id, { type });
       await this.tell(o, { t: 'type', pair: id, type, by: h, state: 'set',
         n: { title: 'You and ' + this.name(s.profiles, h) + ' are now ' + t.l + ' ' + t.e, body: first ? 'Your first daily question is ready. Answer it to see theirs' : 'Daily questions now fit your relationship', go: 'pair:' + id, tag: 'type:' + id } });
       await this.tell(h, { t: 'type', pair: id, type, by: h, state: 'set' });
@@ -338,24 +382,30 @@ export class Pair extends DurableObject {
   }
 
   /** Asks today's question unless it was already asked. `sched` marks the daily alarm (Android also arms that one locally). */
-  async ask(sched) {
+  /** Asks today's question unless it was already asked (or `replace`, for the admin, while nobody has answered). */
+  async ask(sched, { replace = false, qid = null } = {}) {
     const s = await this.all(['meta', 'profiles', 'asked']);
     const meta = s.meta;
     if (!meta || !meta.type) return null;
     const day = todayIn(meta.tz);
-    if (await this.ctx.storage.get('d:' + day)) return null;
-    const all = Q.forType(meta.type);
+    const existing = await this.ctx.storage.get('d:' + day);
+    if (existing && !(replace && !Object.keys(existing.ans).length)) return null;
+    const all = questionsFor(meta.type, await registry(this.env).bank());
     if (!all.length) return null;
     let asked = new Set(s.asked || []);
-    let cand = all.filter(q => !asked.has(q.id));
-    if (!cand.length) { asked = new Set(); cand = all; } // went through everything: start over
-    // the first days stay light, then personal, then anything
-    const maxTier = meta.n < 5 ? 1 : meta.n < 15 ? 2 : 3;
-    const easy = cand.filter(q => q.tier <= maxTier);
-    if (easy.length) cand = easy;
-    const q = cand[Math.floor(Math.random() * cand.length)];
+    let q = qid ? all.find(x => x.id === qid) : null;
+    if (qid && !q) return null;
+    if (!q) {
+      let cand = all.filter(x => !asked.has(x.id) && (!existing || x.id !== existing.id));
+      if (!cand.length) { asked = new Set(); cand = all; } // went through everything: start over
+      // the first days stay light, then personal, then anything
+      const maxTier = meta.n < 5 ? 1 : meta.n < 15 ? 2 : 3;
+      const easy = cand.filter(x => x.tier <= maxTier);
+      if (easy.length) cand = easy;
+      q = cand[Math.floor(Math.random() * cand.length)];
+    }
     asked.add(q.id);
-    meta.n = (meta.n || 0) + 1;
+    if (!existing) meta.n = (meta.n || 0) + 1;
     const d = { day, id: q.id, text: q.text, at: Date.now(), ans: {} };
     await this.ctx.storage.put({ ['d:' + day]: d, asked: [...asked], meta });
     for (const h of meta.members) {
@@ -364,6 +414,34 @@ export class Pair extends DurableObject {
         n: { title: '💬 Today\'s question with ' + this.name(s.profiles, o), body: q.text, go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
     }
     return d;
+  }
+
+  /** Everything the admin panel shows about a pair. Message and answer texts stay private: only who answered. */
+  async adminInfo() {
+    const s = await this.all(['meta', 'profiles', 'mseq', 'asked']);
+    if (!s.meta) return null;
+    const l = await this.ctx.storage.list({ prefix: 'd:', reverse: true, limit: 120 });
+    const days = [...l.values()].map(d => ({ day: d.day, id: d.id, text: d.text, at: d.at, answered: Object.keys(d.ans) }));
+    return { ...s.meta, profiles: s.profiles, messages: s.mseq || 0, asked: (s.asked || []).length, days, next: await this.ctx.storage.getAlarm(), today: todayIn(s.meta.tz) };
+  }
+
+  /** Admin changes: relationship type, question time and zone. Both apps refresh; nobody gets a notification. */
+  async adminSet(b) {
+    const meta = await this.meta();
+    if (!meta) return { error: 'not found', status: 404 };
+    if (b.type !== undefined && b.type !== null && !typeOf(b.type)) return { error: 'unknown type' };
+    if (b.time !== undefined && !isHHMM(b.time)) return { error: 'bad time' };
+    if (b.tz !== undefined && !validTz(b.tz)) return { error: 'bad time zone' };
+    const first = !meta.type && b.type;
+    if (b.type !== undefined) { meta.type = b.type; meta.proposal = null; }
+    if (b.time !== undefined) meta.time = b.time;
+    if (b.tz !== undefined) meta.tz = b.tz;
+    await this.ctx.storage.put('meta', meta);
+    await registry(this.env).putPair(meta.id, { type: meta.type });
+    for (const h of meta.members) await this.tell(h, { t: 'type', pair: meta.id, type: meta.type, by: 'orbit', state: 'set' });
+    if (first) await this.ask(false);
+    await this.reschedule();
+    return { ok: true };
   }
 
   async reschedule() {
@@ -395,11 +473,24 @@ export class Pair extends DurableObject {
     }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    await registry(this.env).removePair(meta.id);
     return { ok: true };
   }
 }
 
 /* ================================================================ http */
+
+/** Deletes an account with its connections and pending requests (used by the user and by the admin). */
+export async function deleteAccount(env, h) {
+  const stub = user(env, h);
+  const conns = await stub.connections();
+  for (const id of Object.keys(conns)) await pair(env, id).leave(h).catch(() => {});
+  const { inReq = {}, outReq = {} } = await stub.requests();
+  for (const o of Object.keys(inReq)) await user(env, o).setRequest('out', h, null);
+  for (const o of Object.keys(outReq)) await user(env, o).setRequest('in', h, null);
+  await stub.destroy();
+  await registry(env).removeUser(h);
+}
 
 function parseToken(req, url) {
   const raw = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '') || url.searchParams.get('t') || '';
@@ -424,6 +515,7 @@ export async function social(req, env, url, json) {
     const secret = b64u.encode(crypto.getRandomValues(new Uint8Array(32)));
     const ok = await user(env, handle).create(handle, cleanProfile(body), validTz(body.tz) ? body.tz : 'UTC', await sha256(secret));
     if (!ok) return json({ error: 'That ID is taken' }, 409);
+    await registry(env).touchUser(handle, await user(env, handle).profile(), []);
     return json({ handle, token: handle + ':' + secret });
   }
 
@@ -437,21 +529,20 @@ export async function social(req, env, url, json) {
 
   if (path === '/me' && req.method === 'GET') {
     const m = await meStub.me();
+    await registry(env).touchUser(me, m, Object.keys(m.conns)).catch(() => {});
     const pairs = await Promise.all(Object.keys(m.conns).map(id => pair(env, id).summary(me).catch(() => null)));
     return json({ ...m, pairs: pairs.filter(Boolean) });
   }
   if (path === '/me' && req.method === 'POST') {
     const r = await meStub.update(body);
-    if (r.profile) await Promise.all(r.conns.map(id => pair(env, id).setProfile(me, r.profile).catch(() => {})));
+    if (r.profile) {
+      await Promise.all(r.conns.map(id => pair(env, id).setProfile(me, r.profile).catch(() => {})));
+      await registry(env).touchUser(me, r.profile, r.conns);
+    }
     return json({ ok: true });
   }
   if (path === '/me' && req.method === 'DELETE') {
-    const conns = await meStub.connections();
-    for (const id of Object.keys(conns)) await pair(env, id).leave(me).catch(() => {});
-    const { inReq = {}, outReq = {} } = await meStub.requests();
-    for (const h of Object.keys(inReq)) await user(env, h).setRequest('out', me, null);
-    for (const h of Object.keys(outReq)) await user(env, h).setRequest('in', me, null);
-    await meStub.destroy();
+    await deleteAccount(env, me);
     return json({ ok: true });
   }
   if (path === '/events' && req.method === 'GET') return json(await meStub.events(parseInt(url.searchParams.get('since') || '0', 10) || 0));
