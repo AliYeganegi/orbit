@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.12'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.13'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -1046,6 +1046,21 @@ function pickPhoto() {
     inp.click();
   });
 }
+/** Edits your own message; the change shows right away and is undone if the server says no. */
+async function editMsg(id, m, text) {
+  const before = { text: m.text, edited: m.edited };
+  m.text = text.trim(); m.edited = Date.now();
+  try { await api('/p/' + id + '/edit', { s: m.s, text: m.text }); }
+  catch (e) { Object.assign(m, before); say(netErr(e)); }
+}
+/** Deletes your own message for both of you. */
+async function deleteMsg(id, m) {
+  const c = Soc.chats[id], i = c.messages.indexOf(m);
+  if (i < 0) return;
+  c.messages.splice(i, 1, { s: m.s, by: m.by, at: m.at, deleted: Date.now() });
+  try { await api('/p/' + id + '/delete', { s: m.s }); say('Message deleted'); }
+  catch (e) { const j = c.messages.findIndex(x => x.s === m.s); if (j >= 0) c.messages.splice(j, 1, m); say(netErr(e)); }
+}
 const REACTS = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
 /** Toggles your reaction on a message (tapping the same emoji again removes it). */
 async function reactMsg(id, m, emoji) {
@@ -1095,6 +1110,13 @@ function onSocEvent(ev) {
     return;
   }
   if (ev.t === 'read') { if (p) p.theirRead = ev.upto; if (c) c.theirRead = ev.upto; return; }
+  if (ev.t === 'edit' || ev.t === 'del') {
+    const i = c ? c.messages.findIndex(x => x.s === (ev.m ? ev.m.s : ev.s)) : -1;
+    const next = ev.t === 'edit' ? ev.m : { s: ev.s, by: i >= 0 ? c.messages[i].by : '', at: i >= 0 ? c.messages[i].at : 0, deleted: Date.now() };
+    if (i >= 0) c.messages.splice(i, 1, { ...next, rx: ev.t === 'edit' ? c.messages[i].rx : undefined });
+    if (p && p.last && p.last.s === next.s) p.last = next;
+    return;
+  }
   if (ev.t === 'react') {
     const m = c && c.messages.find(x => x.s === ev.s);
     if (m) m.rx = ev.rx;
@@ -3005,7 +3027,7 @@ function pairLine(p) {
   if (!p.type) return { t: p.proposal ? 'Waiting for ' + nm + ' to accept' : 'Choose what you are to each other', hot: !p.proposal };
   if (p.today && p.today.day === p.todayKey && !p.today.mine) return { t: '💬 Today\'s question is waiting' + (p.today.theyAnswered ? ' · ' + nm + ' answered' : ''), hot: true };
   if (p.today && p.today.day === p.todayKey && !p.today.theirs) return { t: 'You answered · waiting for ' + nm };
-  if (p.last) return { t: (p.last.by === me ? 'You: ' : '') + clip(p.last.text || '📷 Photo', 60) };
+  if (p.last) return { t: (p.last.by === me ? 'You: ' : '') + (p.last.deleted ? 'Message deleted' : clip(p.last.text || '📷 Photo', 60)) };
   return { t: 'Say hi 👋' };
 }
 
@@ -3232,7 +3254,22 @@ const PairView = {
     watch(() => st.value && st.value.messages.length, (n, o) => { if (tab.value === 'chat') { toBottom(!!o); markRead(id); } });
     watch(tab, t => { if (t === 'chat') { toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
     const sel = ref(null), replyTo = ref(null), flash = ref(null), pending = ref(null), viewer = ref(null), comp = ref(null);
+    const editing = ref(null), delAsk = ref(null);
+    function startEdit(m) {
+      editing.value = m; replyTo.value = null; pending.value = null; sel.value = null;
+      draft.value = m.text || '';
+      nextTick(() => { if (box.value) { box.value.focus(); grow({ target: box.value }); } });
+    }
+    function cancelEdit() { editing.value = null; draft.value = ''; if (box.value) box.value.style.height = ''; }
+    function askDelete(m) { sel.value = null; delAsk.value = m; }
+    function confirmDelete() { const m = delAsk.value; delAsk.value = null; if (m) deleteMsg(id, m); }
     function send() {
+      if (editing.value) {
+        const m = editing.value, t = draft.value.trim();
+        if (!t && !m.media) return;
+        if (t !== m.text) editMsg(id, m, t);
+        cancelEdit(); Native.vibrate(8); return;
+      }
       const t = draft.value; if (!t.trim() && !pending.value) return;
       draft.value = ''; sendMsg(id, t, replyTo.value, pending.value); replyTo.value = null; pending.value = null; Native.vibrate(8);
       if (box.value) box.value.style.height = '';
@@ -3245,13 +3282,13 @@ const PairView = {
     let pressT = null, pressed = false;
     function pressStart(m) {
       pressed = false; clearTimeout(pressT);
-      pressT = setTimeout(() => { if (m.s) { pressed = true; sel.value = m.s; Native.vibrate(15); } }, 450);
+      pressT = setTimeout(() => { if (m.s && !m.deleted) { pressed = true; sel.value = m.s; Native.vibrate(15); } }, 450);
     }
     const pressEnd = () => clearTimeout(pressT);
     function tapMsg(m) {
       if (pressed) { pressed = false; return; }
       if (m.failed) return retryMsg(id, m);
-      if (!m.s) return;
+      if (!m.s || m.deleted) return;
       sel.value = sel.value === m.s ? null : m.s;
     }
     const srcOf = m => (m.media ? m.media.local || (Photos[m.media.fid] && !['loading', 'error'].includes(Photos[m.media.fid]) ? Photos[m.media.fid] : null) : null);
@@ -3334,7 +3371,7 @@ const PairView = {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
     <header class="top sm">
@@ -3409,35 +3446,44 @@ const PairView = {
           <template v-for="r in rows" :key="r.key">
             <div v-if="r.sep" class="chat-sep">{{ r.sep }}</div>
             <template v-else>
-            <div class="msg" :id="r.m.s ? 'msg' + r.m.s : null" :class="{me: r.m.by === meH, failed: r.m.failed, picked: sel === r.m.s, flash: flash === r.m.s, reacted: r.m.rx, photo: r.m.media}"
+            <div class="msg" :id="r.m.s ? 'msg' + r.m.s : null" :class="{me: r.m.by === meH, failed: r.m.failed, picked: sel === r.m.s, flash: flash === r.m.s, reacted: r.m.rx && !r.m.deleted, photo: r.m.media && !r.m.deleted, deleted: r.m.deleted, editing: editing === r.m}"
               @click="tapMsg(r.m)" @pointerdown="pressStart(r.m)" @pointerup="pressEnd" @pointerleave="pressEnd" @pointercancel="pressEnd" @contextmenu.prevent>
+              <template v-if="r.m.deleted"><div class="txt gone"><Ic n="x" :s="13"/>Message deleted</div><div class="meta">{{ hm(r.m.at) }}</div></template>
+              <template v-else>
               <div v-if="r.m.rq" class="quote" @click.stop="jump(r.m.re)"><b>{{ r.m.rq.by === meH ? 'You' : nm }}</b><span>{{ r.m.rq.text }}</span></div>
               <button v-if="r.m.media" class="pic" :style="{aspectRatio: (r.m.media.width || 4) + ' / ' + (r.m.media.height || 3)}" @click.stop="openPhoto(r.m)" aria-label="Open photo">
                 <img v-if="srcOf(r.m)" :src="srcOf(r.m)" alt="" draggable="false">
                 <span v-else class="pic-wait"><Ic :n="Photos[r.m.media.fid] === 'error' ? 'circle-alert' : 'image'" :s="24"/></span>
                 <span v-if="r.m.pending" class="pic-up"><Ic n="clock" :s="16"/></span></button>
               <div v-if="r.m.text" class="txt">{{ r.m.text }}</div>
-              <div class="meta">{{ r.m.failed ? 'Not sent · tap to retry' : hm(r.m.at) }}
+              <div class="meta">{{ r.m.failed ? 'Not sent · tap to retry' : (r.m.edited ? 'edited · ' : '') + hm(r.m.at) }}
                 <template v-if="r.m.by === meH && !r.m.failed"><Ic v-if="r.m.pending" n="clock" :s="12"/><Ic v-else :n="st.theirRead >= r.m.s ? 'check-check' : 'check'" :s="13" :class="{seen: st.theirRead >= r.m.s}"/></template></div>
               <div v-if="r.m.rx" class="rx" @click.stop="sel = r.m.s"><span v-for="x in rxList(r.m)" :key="x.h" :class="{mine: x.mine}">{{ x.e }}</span></div>
+              </template>
             </div>
             <div v-if="sel === r.m.s" class="msg-tools" :class="{me: r.m.by === meH}">
               <button v-for="e in REACTS" :key="e" class="rx-btn" :class="{on: r.m.rx && r.m.rx[meH] === e}" @click="react(r.m, e)">{{ e }}</button>
               <span class="sep"></span>
               <button class="tool" @click="reply(r.m)" aria-label="Reply"><Ic n="reply" :s="17"/></button>
-              <button class="tool" @click="copyMsg(r.m)" aria-label="Copy"><Ic n="copy" :s="16"/></button>
+              <button v-if="r.m.text" class="tool" @click="copyMsg(r.m)" aria-label="Copy"><Ic n="copy" :s="16"/></button>
+              <template v-if="r.m.by === meH">
+                <button class="tool" @click="startEdit(r.m)" aria-label="Edit"><Ic n="pencil" :s="16"/></button>
+                <button class="tool danger" @click="askDelete(r.m)" aria-label="Delete"><Ic n="trash-2" :s="16"/></button>
+              </template>
             </div>
             </template>
           </template>
         </div>
         <div class="composer" ref="comp">
+          <div v-if="editing" class="reply-bar"><Ic n="pencil" :s="15"/><div class="grow"><b>Editing</b><span>{{ editing.text || '📷 Photo caption' }}</span></div>
+            <button @pointerdown.prevent @mousedown.prevent @click="cancelEdit" aria-label="Cancel editing"><Ic n="x" :s="16"/></button></div>
           <div v-if="replyTo" class="reply-bar"><Ic n="reply" :s="15"/><div class="grow"><b>{{ replyTo.by === meH ? 'You' : nm }}</b><span>{{ replyTo.text || '📷 Photo' }}</span></div>
             <button @pointerdown.prevent @mousedown.prevent @click="replyTo = null" aria-label="Cancel reply"><Ic n="x" :s="16"/></button></div>
           <div v-if="pending" class="attach-bar"><img :src="pending.url" alt=""><span class="grow">Photo ready · add a caption or send</span>
             <button @pointerdown.prevent @mousedown.prevent @click="pending = null" aria-label="Remove photo"><Ic n="x" :s="16"/></button></div>
-          <button v-if="canPhoto" class="attach" @pointerdown.prevent @mousedown.prevent @click="attach" aria-label="Add a photo"><Ic n="image" :s="21"/></button>
+          <button v-if="canPhoto && !editing" class="attach" @pointerdown.prevent @mousedown.prevent @click="attach" aria-label="Add a photo"><Ic n="image" :s="21"/></button>
           <textarea ref="box" v-model="draft" rows="1" :placeholder="pending ? 'Add a caption…' : 'Message'" maxlength="2000" @input="grow" @focus="onFocus" @keydown.enter.exact="!IOS && !Native.has && ($event.preventDefault(), send())"></textarea>
-          <button class="send" :disabled="!draft.trim() && !pending" @pointerdown.prevent @mousedown.prevent @click="send" aria-label="Send"><Ic n="send" :s="19"/></button>
+          <button class="send" :disabled="editing ? !draft.trim() && !editing.media : !draft.trim() && !pending" @pointerdown.prevent @mousedown.prevent @click="send" :aria-label="editing ? 'Save' : 'Send'"><Ic :n="editing ? 'check' : 'send'" :s="19"/></button>
         </div>
         <Teleport to="body"><Transition name="fade"><div v-if="viewer" class="viewer" @click="viewer = null"><img :src="viewer" alt=""><button class="close" aria-label="Close"><Ic n="x" :s="22"/></button></div></Transition></Teleport>
       </template>
@@ -3455,6 +3501,10 @@ const PairView = {
         </div>
         <button class="btn danger block" style="margin-top:18px" @click="leaveAsk = true">Remove {{ nm }}</button>
       </div>
+    </Sheet>
+    <Sheet :open="!!delAsk" title="Delete message?" @close="delAsk = null">
+      <p class="muted">It will be removed for both of you{{ delAsk && delAsk.media ? ', photo included' : '' }}.</p>
+      <div class="btn-row"><button class="btn" @click="delAsk = null">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="confirmDelete">Delete</button></div>
     </Sheet>
     <Sheet :open="leaveAsk" title="Remove connection?" @close="leaveAsk = false">
       <p class="muted">Your chat and all your answers with {{ nm }} will be deleted for both of you.</p>

@@ -131,6 +131,23 @@ try {
   assert.deepEqual(replyToPhoto.data.rq, { by: A, text: '📷 Photo', photo: true });
   console.log('✓ photos: upload, send, members only');
 
+  // edit and delete: only your own messages, both apps update, a deleted photo is gone for good
+  const ed = await call('/s/p/' + pid + '/edit', { body: { s: 2, text: 'hey Sara!!' }, token: ta });
+  assert.equal(ed.data.m.text, 'hey Sara!!'); assert.ok(ed.data.m.edited);
+  await waitFor(() => live.find(x => x.ev.t === 'edit' && x.ev.m.s === 2), 'live edit');
+  assert.equal((await call('/s/p/' + pid + '/edit', { body: { s: 1, text: 'not mine' }, token: ta })).status, 403, 'can\'t edit theirs');
+  assert.equal((await call('/s/p/' + pid + '/edit', { body: { s: 2, text: '   ' }, token: ta })).status, 400, 'text can\'t become empty');
+  assert.equal((await call('/s/p/' + pid + '/edit', { body: { s: only.data.s, text: '' }, token: ta })).status, 200, 'a photo caption can');
+  assert.equal((await call('/s/p/' + pid + '/delete', { body: { s: 1 }, token: ta })).status, 403, 'can\'t delete theirs');
+  assert.equal((await call('/s/p/' + pid + '/delete', { body: { s: pm.data.s }, token: ta })).status, 200);
+  await waitFor(() => live.find(x => x.ev.t === 'del' && x.ev.s === pm.data.s), 'live delete');
+  const after = (await call('/s/p/' + pid + '/state', { token: tb })).data.messages.find(m => m.s === pm.data.s);
+  assert.ok(after.deleted && after.text === undefined && after.media === undefined, 'nothing of it is left');
+  assert.equal((await fetch(W + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + tb } })).status, 404, 'its photo is erased');
+  assert.equal((await call('/s/p/' + pid + '/edit', { body: { s: pm.data.s, text: 'back' }, token: ta })).status, 404, 'deleted stays deleted');
+  assert.equal((await call('/s/p/' + pid + '/react', { body: { s: pm.data.s, emoji: '❤️' }, token: tb })).status, 404);
+  console.log('✓ edit and delete own messages');
+
   // relationship type: needs both people, and the first question comes right away
   await call('/s/p/' + pid + '/type', { body: { type: 'married' }, token: ta });
   await waitFor(() => received.find(m => /says you are Married/.test(m.title)), 'proposal push');

@@ -155,6 +155,26 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   await B.shot('people-12b-photo');
   A.ok('send a photo with a caption; it opens full screen');
 
+  // edit and delete your own messages; the other phone updates live
+  await A.p.click('.msg.me:has-text("Hi Sara")');
+  await A.p.click('.msg-tools button[aria-label="Edit"]');
+  await A.p.waitForSelector('.reply-bar:has-text("Editing")');
+  assert.equal(await A.p.inputValue('.composer textarea'), 'Hi Sara 👋');
+  await A.p.fill('.composer textarea', 'Hi Sara, good morning ☀️');
+  await A.p.click('.composer .send[aria-label="Save"]');
+  await B.p.waitForSelector('.msg:has-text("good morning") .meta:has-text("edited")', { timeout: 8000 });
+  assert.equal(await A.p.locator('.msg.me .rx:has-text("❤️")').count(), 1, 'reactions survive an edit');
+  await A.p.click('.msg.me.photo .meta');
+  await A.p.click('.msg-tools button[aria-label="Delete"]');
+  await A.p.click('.sheet button:has-text("Delete")');
+  await B.p.waitForSelector('.msg.deleted:has-text("Message deleted")', { timeout: 8000 });
+  assert.equal(await B.p.locator('.msg.photo').count(), 0, 'the photo is gone on both phones');
+  assert.equal(await B.p.locator('.msg:not(.me).deleted').count(), 1);
+  await B.p.click('.msg.deleted');
+  assert.equal(await B.p.locator('.msg-tools').count(), 0, 'no menu on a deleted message');
+  await A.shot('people-13-edit-delete');
+  A.ok('edit and delete own messages, live on the other phone');
+
   // badges: a message to someone who isn't looking shows up on Today and on More
   await B.G(`g.nav.screen = null; g.nav.tab = 'today'`);
   await A.p.fill('.composer textarea', 'Dinner at 8?');

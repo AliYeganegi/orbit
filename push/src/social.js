@@ -333,7 +333,7 @@ export class Pair extends DurableObject {
     if (photo) m.media = photo;
     if (Number.isInteger(re) && re > 0 && re < seq) { // a reply keeps a short copy of what it answers, so it shows without loading old messages
       const orig = await this.ctx.storage.get('m:' + pad(re));
-      if (orig) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text || '📷 Photo', 140) }; if (orig.media) m.rq.photo = true; }
+      if (orig && !orig.deleted) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text || '📷 Photo', 140) }; if (orig.media) m.rq.photo = true; }
     }
     const read = s.read || {};
     read[h] = seq; // sending means you've seen everything before it
@@ -345,11 +345,41 @@ export class Pair extends DurableObject {
     return m;
   }
 
+  /** Changes the text of your own message (a photo's caption may become empty). Both apps update quietly. */
+  async edit(h, seqNo, text) {
+    const meta = await this.meta(), key = 'm:' + pad(seqNo), m = await this.ctx.storage.get(key);
+    if (!m || m.deleted) return { error: 'no such message', status: 404 };
+    if (m.by !== h) return { error: 'You can only edit your own messages', status: 403 };
+    if (!text && !m.media) return { error: 'empty' };
+    m.text = text; m.edited = Date.now();
+    await this.ctx.storage.put(key, m);
+    for (const x of meta.members) await this.tell(x, { t: 'edit', pair: meta.id, m });
+    return { ok: true, m };
+  }
+
+  /** Deletes your own message for both people, photo included; a placeholder keeps the conversation's order. */
+  async remove(h, seqNo) {
+    const meta = await this.meta(), key = 'm:' + pad(seqNo), m = await this.ctx.storage.get(key);
+    if (!m || m.deleted) return { error: 'no such message', status: 404 };
+    if (m.by !== h) return { error: 'You can only delete your own messages', status: 403 };
+    if (m.media) {
+      const f = await this.ctx.storage.get('f:' + m.media.fid);
+      if (f) {
+        await this.ctx.storage.delete('f:' + m.media.fid);
+        await this.ctx.storage.put('fbytes', Math.max(0, ((await this.ctx.storage.get('fbytes')) || 0) - f.size));
+      }
+    }
+    const gone = { s: m.s, by: m.by, at: m.at, deleted: Date.now() };
+    await this.ctx.storage.put(key, gone);
+    for (const x of meta.members) await this.tell(x, { t: 'del', pair: meta.id, s: m.s });
+    return { ok: true };
+  }
+
   /** One reaction per person per message; an empty emoji removes yours. */
   async react(h, seqNo, emoji) {
     const s = await this.all(['meta', 'profiles']);
     const key = 'm:' + pad(seqNo), m = await this.ctx.storage.get(key);
-    if (!m) return { error: 'no such message', status: 404 };
+    if (!m || m.deleted) return { error: 'no such message', status: 404 };
     m.rx = m.rx || {};
     if (emoji) m.rx[h] = emoji; else delete m.rx[h];
     if (!Object.keys(m.rx).length) delete m.rx;
@@ -703,6 +733,8 @@ export async function social(req, env, url, json, cors = {}) {
       if (emoji.length > 16 || /[\s<>]/.test(emoji)) return json({ error: 'bad emoji' }, 400);
       return done(await p.react(me, Number(body.s) || 0, emoji));
     }
+    if (action === 'edit') return done(await p.edit(me, Number(body.s) || 0, cleanText(body.text)));
+    if (action === 'delete') return done(await p.remove(me, Number(body.s) || 0));
     if (action === 'read') return json({ seq: await p.markRead(me, Number(body.seq) || 0) });
     if (action === 'type') return done(await p.propose(me, String(body.type || '')));
     if (action === 'decline') return done(await p.decline(me));
