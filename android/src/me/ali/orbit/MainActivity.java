@@ -32,10 +32,16 @@ import java.lang.ref.WeakReference;
 
 public class MainActivity extends Activity {
     private static final String HOST = "appassets.local";
+    // the one place the app talks to: People (accounts, chat, daily questions)
+    private static final String API_HOST = "orbit-push.aliyeganegi.workers.dev";
     private static final int BG_DARK = 0xFF0B0C10;
     private static final int BG_LIGHT = 0xFFF3F4F8;
 
     private static WeakReference<MainActivity> live = new WeakReference<>(null);
+    private static volatile boolean resumed;
+
+    /** True while the app is on screen: it shows People events itself, so the background check stays quiet. */
+    static boolean isOpen() { return resumed; }
 
     private WebView web;
     private boolean loaded;
@@ -74,6 +80,7 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
+                if (API_HOST.equals(u.getHost())) return null; // straight to the network
                 if (!HOST.equals(u.getHost())) {
                     return new WebResourceResponse("text/plain", "utf-8", 403, "Offline app", null, null);
                 }
@@ -168,12 +175,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        resumed = false;
         web.onPause();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         web.onResume();
         js("window.orbitResume && window.orbitResume()");
     }
@@ -193,6 +202,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void sync(String planJson) {
             try { Scheduler.sync(MainActivity.this, planJson); } catch (Exception ignored) { }
+        }
+
+        @JavascriptInterface
+        public void socialAuth(String url, String token, long seen) {
+            SocialPoll.configure(MainActivity.this, url, token, seen);
+        }
+
+        @JavascriptInterface
+        public void socialSeen(long seq) {
+            SocialPoll.markSeen(MainActivity.this, seq);
         }
 
         @JavascriptInterface

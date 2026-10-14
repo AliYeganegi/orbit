@@ -7,8 +7,11 @@
 // water rule, and keeps a single storage alarm set to the earliest due item, so there is no polling.
 
 import { DurableObject } from 'cloudflare:workers';
-import { sendPush, b64u } from './webpush.js';
+import { sendPush, b64u, validSubscription } from './webpush.js';
 import '../../web/schedule.js';
+import { social } from './social.js';
+
+export { User, Pair } from './social.js';
 
 const { nextWater, nextAt } = globalThis.OrbitSchedule;
 const MAX_RULES = 60;
@@ -18,7 +21,6 @@ const MAX_BODY = 200_000;
 const HORIZON = 62 * 864e5; // accept reminders up to ~2 months ahead
 const EARLY = 15_000; // deliver items due within this window together
 const STALE = 6 * 3600e3; // reminders this late (device was unreachable) are dropped
-const PUSH_HOSTS = [/\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
 const CHANNELS = ['tasks', 'focus', 'cycle', 'test'];
 
 const json = (data, status = 200, headers = {}) =>
@@ -28,13 +30,6 @@ async function sha256(text) {
   return b64u.encode(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
 }
 
-function validSubscription(sub, env) {
-  if (!sub || typeof sub.endpoint !== 'string' || !sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') return false;
-  let u;
-  try { u = new URL(sub.endpoint); } catch { return false; }
-  if (env.ALLOW_TEST_ENDPOINTS === '1' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return true;
-  return u.protocol === 'https:' && PUSH_HOSTS.some(rx => rx.test(u.hostname));
-}
 
 function validTz(tz) {
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
@@ -218,6 +213,7 @@ export default {
     try {
       if (url.pathname === '/health') return json({ ok: true }, 200, h);
       if (url.pathname === '/vapid') return json({ key: env.VAPID_PUBLIC }, 200, h);
+      if (url.pathname.startsWith('/s/')) return await social(req, env, url, (data, status = 200) => json(data, status, h));
 
       if (url.pathname === '/register' && req.method === 'POST') {
         const body = await readJson(req);

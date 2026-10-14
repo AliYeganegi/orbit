@@ -29,7 +29,7 @@ const OUT = process.argv[3];
     g.S.cycleDays.push(g.addDays(k, -8));`);
 
   for (const t of ['today', 'tasks', 'habits', 'money', 'more']) await step('tab ' + t, () => G(`g.nav.screen = null; g.nav.tab = '${t}'`));
-  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts', 'reports', 'reminders']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
+  for (const sc of ['notes', 'focus', 'water', 'mood', 'countdowns', 'cycle', 'settings', 'alerts', 'reports', 'reminders', 'people']) await step('screen ' + sc, () => G(`g.nav.screen = '${sc}'`));
 
   // bank SMS → drafts → categorize
   await step('sms import', () => p.evaluate(() => {

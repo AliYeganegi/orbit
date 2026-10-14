@@ -1,7 +1,7 @@
 // Orbit service worker: offline cache + push notifications.
 // Bump VERSION whenever any app file changes so installed phones pick up the update.
-const VERSION = 'orbit-v7';
-const FILES = ['./', 'index.html', 'app.css', 'app.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const VERSION = 'orbit-v8';
+const FILES = ['./', 'index.html', 'app.css', 'app.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'questions.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
@@ -54,6 +54,8 @@ async function show(msg) {
     title = '💧 Time for some water';
     body = count >= goal ? 'Goal reached today 🎉 Keep sipping if you like' : count ? count + ' of ' + goal + ' glasses so far today' : 'No water logged yet today';
     go = 'water';
+  } else if (msg.k === 'social') { // People: messages and daily questions (the server composes the text)
+    title = msg.title || 'Orbit'; body = msg.body || ''; go = msg.go || 'people';
   } else if (msg.k === 'test') {
     title = '🔔 Orbit test'; body = 'Notifications work!'; go = 'alerts';
   } else if (msg.c) {
@@ -77,6 +79,6 @@ self.addEventListener('notificationclick', e => {
   e.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of all) { c.postMessage({ go }); if ('focus' in c) return c.focus(); }
-    return self.clients.openWindow('./' + (go ? '?go=' + go : ''));
+    return self.clients.openWindow('./' + (go ? '?go=' + encodeURIComponent(go) : ''));
   })());
 });

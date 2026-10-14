@@ -83,3 +83,14 @@ export async function sendPush(subscription, payload, vapid, { ttl = 3600, urgen
   const res = await fetch(subscription.endpoint, { method: 'POST', headers, body });
   return { ok: res.ok, status: res.status, gone: res.status === 404 || res.status === 410 };
 }
+
+const PUSH_HOSTS = [/\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
+
+/** Only real push services (or localhost in tests) may be used as endpoints, so the server can't be made to POST anywhere. */
+export function validSubscription(sub, env) {
+  if (!sub || typeof sub.endpoint !== 'string' || !sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') return false;
+  let u;
+  try { u = new URL(sub.endpoint); } catch { return false; }
+  if (env.ALLOW_TEST_ENDPOINTS === '1' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return true;
+  return u.protocol === 'https:' && PUSH_HOSTS.some(rx => rx.test(u.hostname));
+}

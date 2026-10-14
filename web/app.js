@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.8'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.9'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -182,7 +182,7 @@ const defaults = () => ({
     name: '', theme: 'system', onboarded: false,
     waterGoal: 8, glassMl: 250, budget: 0,
     focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
-    cycle: { name: '', len: 28, plen: 5, notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' }, tip: { on: false, time: '09:00' } },
+    cycle: { name: '', len: 28, plen: 5, expected: '', notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' }, tip: { on: false, time: '09:00' } },
     notify: { tasks: true, focus: true },
     sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
@@ -246,7 +246,10 @@ function say(msg, undo) {
   toastT = setTimeout(() => { toast.msg = ''; }, undo ? 4500 : 2400);
 }
 function doUndo() { const u = toast.undo; toast.msg = ''; u && u(); }
-function go(screen) { nav.screen = screen; }
+function go(screen) {
+  if (screen && screen.startsWith('pair:')) { Soc.open = screen.slice(5); nav.screen = 'pair'; return; }
+  nav.screen = screen;
+}
 
 /* back handling (Android hardware back) */
 const backStack = [];
@@ -254,7 +257,7 @@ const pushBack = fn => { if (!backStack.includes(fn)) backStack.push(fn); };
 const popBack = fn => { const i = backStack.indexOf(fn); if (i >= 0) backStack.splice(i, 1); };
 window.orbitBack = () => {
   if (backStack.length) { backStack.pop()(); return true; }
-  if (nav.screen) { nav.screen = null; return true; }
+  if (nav.screen) { nav.screen = nav.screen === 'pair' ? 'people' : null; return true; }
   if (nav.tab !== 'today') { nav.tab = 'today'; return true; }
   return false;
 };
@@ -607,6 +610,11 @@ const cyc = computed(() => {
   const len = lens.length ? Math.round(avg(lens.slice(-6))) : cs.len;
   const plens = periods.slice(-6).map(p => diffDays(p.start, p.end) + 1).filter(n => n > 1);
   const plen = plens.length ? Math.round(avg(plens)) : cs.plen;
+  // nothing logged yet but the next period date is known: start from an estimated last period so the app works right away
+  if (!periods.length && cs.expected) {
+    const start = addDays(cs.expected, -len);
+    periods.push({ start: start > t ? t : start, end: start > t ? t : start, est: true });
+  }
   const base = { periods, lens, len, plen, has: periods.length > 0, map: {} };
   if (!periods.length) return base;
 
@@ -617,7 +625,7 @@ const cyc = computed(() => {
   const ov = addDays(next, -14);
   const loggedLen = diffDays(last.start, last.end) + 1;
   const curLen = loggedLen > 1 ? loggedLen : plen;
-  const inPeriod = S.cycleDays.includes(t) || (day >= 1 && day <= curLen && (loggedLen === 1 || t <= last.end));
+  const inPeriod = S.cycleDays.includes(t) || (!last.est && day >= 1 && day <= curLen && (loggedLen === 1 || t <= last.end));
 
   // no name means she's tracking her own cycle, so tips speak to her instead of a partner
   const self = !cs.name.trim();
@@ -631,13 +639,13 @@ const cyc = computed(() => {
 
   const map = {};
   S.cycleDays.forEach(k => { map[k] = 'p'; });
-  if (loggedLen === 1) for (let i = 1; i < plen; i++) { const k = addDays(last.start, i); map[k] = map[k] || 'pp'; }
+  if (loggedLen === 1 && !last.est) for (let i = 1; i < plen; i++) { const k = addDays(last.start, i); map[k] = map[k] || 'pp'; }
   for (let i = 0; i < 6; i++) {
     const s = addDays(next, i * len), o = addDays(s, -14);
     for (let j = -5; j <= 1; j++) { const k = addDays(o, j); if (!map[k]) map[k] = j === 0 ? 'ov' : 'f'; }
     for (let j = 0; j < plen; j++) { const k = addDays(s, j); if (!map[k]) map[k] = 'pp'; }
   }
-  return { ...base, last, day, next, toNext, ov, inPeriod, phase, pc, tip, map, fStart: addDays(ov, -5), fEnd: addDays(ov, 1) };
+  return { ...base, est: !!last.est, last, day, next, toNext, ov, inPeriod, phase, pc, tip, map, fStart: addDays(ov, -5), fEnd: addDays(ov, 1) };
 });
 function togglePeriodDay(k) {
   const i = S.cycleDays.indexOf(k);
@@ -744,7 +752,7 @@ function cycleDayInfo(k) {
   const nextStart = c.periods[idx + 1] ? c.periods[idx + 1].start : addDays(p.start, c.len);
   const day = diffDays(p.start, k) + 1, toNext = diffDays(k, nextStart);
   const ov = addDays(nextStart, -14), logged = diffDays(p.start, p.end) + 1;
-  const plen = logged > 1 ? logged : c.plen;
+  const plen = p.est ? 0 : logged > 1 ? logged : c.plen;
   let phase;
   if (day <= plen || S.cycleDays.includes(k)) phase = 'period';
   else if (toNext < 0) phase = 'late';
@@ -806,8 +814,9 @@ const cycStats = computed(() => {
   const lens = c.lens.slice(-6), dev = sd(lens);
   const regularity = c.lens.length < 2 ? { l: 'Learning', s: 'Log 2+ cycles to see this' } : dev <= 2 ? { l: 'Very regular', s: '±' + Math.round(dev) + ' days' } : dev <= 4 ? { l: 'Regular', s: '±' + Math.round(dev) + ' days' } : dev <= 7 ? { l: 'Somewhat irregular', s: '±' + Math.round(dev) + ' days' } : { l: 'Irregular', s: '±' + Math.round(dev) + ' days' };
   const margin = c.lens.length >= 2 ? Math.max(1, Math.round(dev)) : 3;
-  const cycles = c.periods.map((p, i) => {
-    const next = c.periods[i + 1];
+  const real = c.periods.filter(p => !p.est);
+  const cycles = real.map((p, i) => {
+    const next = real[i + 1];
     const logged = diffDays(p.start, p.end) + 1;
     return { start: p.start, end: p.end, plen: logged > 1 ? logged : null, clen: next ? diffDays(p.start, next.start) : null };
   });
@@ -872,6 +881,183 @@ const cycStats = computed(() => {
 });
 
 
+/* ================= people: connections, chat, daily question ================= */
+// The one part of Orbit that can't live only on this phone: accounts, messages and answers are kept on
+// the Orbit server (push/src/social.js) so both people see them. The login key never leaves this phone.
+const SOC_KEY = 'orbit.social';
+const REL = Object.fromEntries(OrbitQuestions.TYPES.map(t => [t.id, t]));
+const Soc = reactive({
+  acct: (() => { try { return JSON.parse(localStorage.getItem(SOC_KEY)) || null; } catch (e) { return null; } })(), // { handle, token, seen }
+  me: null, chats: {}, open: null, online: false,
+});
+const saveSoc = () => { try { Soc.acct ? localStorage.setItem(SOC_KEY, JSON.stringify(Soc.acct)) : localStorage.removeItem(SOC_KEY); } catch (e) {} };
+const socPairs = computed(() => (Soc.me ? Soc.me.pairs : []));
+const pairOf = id => socPairs.value.find(p => p.id === id);
+const whoName = w => (w && (w.name || '@' + w.handle)) || '';
+const clip = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
+/** What needs this person's attention: requests, questions waiting for an answer, unread messages. */
+const socTodo = computed(() => {
+  if (!Soc.me) return { reqs: 0, questions: [], unread: 0, total: 0 };
+  const reqs = Object.keys(Soc.me.inReq).length;
+  const questions = socPairs.value.filter(p => p.today && !p.today.mine && p.today.day === p.todayKey);
+  const proposals = socPairs.value.filter(p => p.proposal && p.proposal.by !== Soc.me.handle).length;
+  const unread = socPairs.value.reduce((n, p) => n + (p.unread || 0), 0);
+  return { reqs, questions, unread, proposals, total: reqs + questions.length + unread + proposals };
+});
+
+async function api(path, body, method) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (Soc.acct) headers.Authorization = 'Bearer ' + Soc.acct.token;
+  const res = await fetch(PUSH_URL + '/s' + path, { method: method || (body ? 'POST' : 'GET'), headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(data.error || 'Something went wrong'); e.status = res.status; throw e; }
+  return data;
+}
+const netErr = e => (e && e.status ? e.message : 'Couldn\'t reach Orbit. Check your connection');
+
+/** Tells the Android shell who is signed in, so its background check can fetch new messages. */
+function socNative() {
+  try { if (AN && AN.socialAuth) AN.socialAuth(Soc.acct ? PUSH_URL : '', Soc.acct ? Soc.acct.token : '', Soc.acct ? Soc.acct.seen || 0 : 0); } catch (e) {}
+}
+function socSeen(seq) {
+  if (!Soc.acct || !(seq > (Soc.acct.seen || 0))) return;
+  Soc.acct.seen = seq; saveSoc();
+  try { if (AN && AN.socialSeen) AN.socialSeen(seq); } catch (e) {}
+}
+async function socStart(acct) {
+  Soc.acct = { ...acct, seen: 0 }; saveSoc();
+  await refreshMe();
+  socNative(); socConnect(); socPushSync();
+}
+function socSignOut(msg) {
+  try { sock && sock.close(); } catch (e) {}
+  Soc.acct = null; Soc.me = null; Soc.chats = {}; Soc.open = null; saveSoc(); socNative();
+  if (nav.screen === 'pair') nav.screen = 'people';
+  if (msg) say(msg);
+}
+async function refreshMe() {
+  if (!Soc.acct) return;
+  try {
+    const me = await api('/me');
+    Soc.me = me;
+    if (me.seq > (Soc.acct.seen || 0)) socSeen(me.seq); // the app is looking at everything now
+  } catch (e) { if (e.status === 401) socSignOut('You were signed out of People'); }
+}
+function mergeSummary(st) {
+  if (!Soc.me) return;
+  const { messages, days, ...sum } = st;
+  const i = Soc.me.pairs.findIndex(p => p.id === st.id);
+  if (i >= 0) Soc.me.pairs[i] = sum; else Soc.me.pairs.push(sum);
+}
+async function loadPair(id) {
+  try {
+    const st = await api('/p/' + id + '/state');
+    Soc.chats[id] = st; mergeSummary(st);
+    return st;
+  } catch (e) {
+    if (e.status === 404) { delete Soc.chats[id]; refreshMe(); if (Soc.open === id && nav.screen === 'pair') { nav.screen = 'people'; say('This connection has ended'); } }
+    else say(netErr(e));
+    return null;
+  }
+}
+let readTimer;
+function markRead(id) {
+  const c = Soc.chats[id], p = pairOf(id);
+  if (p) p.unread = 0;
+  const last = c && [...c.messages].reverse().find(m => m.s && !m.pending);
+  if (!last) return;
+  clearTimeout(readTimer);
+  readTimer = setTimeout(() => api('/p/' + id + '/read', { seq: last.s }).catch(() => {}), 400);
+}
+async function sendMsg(id, text) {
+  const c = Soc.chats[id];
+  if (!c || !text.trim()) return;
+  const cid = uid();
+  c.messages.push({ by: Soc.acct.handle, text: text.trim(), at: Date.now(), cid, pending: true });
+  try {
+    const m = await api('/p/' + id + '/send', { text: text.trim(), cid });
+    const i = c.messages.findIndex(x => x.cid === cid && !x.s);
+    if (c.messages.some(x => x.s === m.s)) { if (i >= 0) c.messages.splice(i, 1); } // the live event got here first
+    else if (i >= 0) c.messages.splice(i, 1, m); else c.messages.push(m);
+    const p = pairOf(id); if (p) p.last = m;
+  } catch (e) {
+    const x = c.messages.find(x => x.cid === cid && !x.s);
+    if (x) { x.pending = false; x.failed = true; }
+    say(netErr(e));
+  }
+}
+function retryMsg(id, m) {
+  const c = Soc.chats[id], i = c.messages.indexOf(m);
+  if (i >= 0) c.messages.splice(i, 1);
+  sendMsg(id, m.text);
+}
+
+/* live updates while the app is open */
+let sock = null, sockRetry, sockPing;
+function socConnect() {
+  if (!Soc.acct || sock || document.hidden) return;
+  let s;
+  try { s = new WebSocket(PUSH_URL.replace(/^http/, 'ws') + '/s/ws?t=' + encodeURIComponent(Soc.acct.token)); } catch (e) { return; }
+  sock = s;
+  s.onopen = () => { Soc.online = true; sockPing = setInterval(() => { if (s.readyState === 1) s.send('ping'); }, 25e3); refreshMe(); if (Soc.open && Soc.chats[Soc.open]) loadPair(Soc.open); };
+  s.onmessage = e => { try { const d = JSON.parse(e.data); if (d.t === 'ev') onSocEvent(d.ev); } catch (err) {} };
+  s.onclose = () => {
+    clearInterval(sockPing); Soc.online = false;
+    if (sock === s) sock = null;
+    clearTimeout(sockRetry);
+    if (Soc.acct && !document.hidden) sockRetry = setTimeout(socConnect, 5000);
+  };
+}
+function onSocEvent(ev) {
+  socSeen(ev.seq);
+  const p = ev.pair ? pairOf(ev.pair) : null, c = ev.pair ? Soc.chats[ev.pair] : null;
+  const viewing = nav.screen === 'pair' && Soc.open === ev.pair && !document.hidden;
+  if (ev.t === 'msg') {
+    if (c && !c.messages.some(m => m.s === ev.m.s)) {
+      const i = c.messages.findIndex(m => ev.m.cid && m.cid === ev.m.cid && !m.s);
+      if (i >= 0) c.messages.splice(i, 1, ev.m); else c.messages.push(ev.m);
+    }
+    if (ev.m.by !== Soc.acct.handle) { // replying means they've read everything before it
+      if (p) p.theirRead = Math.max(p.theirRead || 0, ev.m.s);
+      if (c) c.theirRead = Math.max(c.theirRead || 0, ev.m.s);
+    }
+    if (p) {
+      p.last = ev.m;
+      if (ev.m.by !== Soc.acct.handle) { if (viewing) markRead(ev.pair); else p.unread = (p.unread || 0) + 1; }
+    }
+    if (ev.n && !viewing) { say(ev.n.title + ': ' + clip(ev.n.body, 60)); Native.vibrate(20); }
+    return;
+  }
+  if (ev.t === 'read') { if (p) p.theirRead = ev.upto; if (c) c.theirRead = ev.upto; return; }
+  if (ev.t === 'gone') {
+    delete Soc.chats[ev.pair];
+    if (viewing) { nav.screen = 'people'; say('This connection has ended'); }
+    refreshMe(); return;
+  }
+  if (ev.n && !viewing) say(ev.n.title);
+  refreshMe();
+  if (c) loadPair(ev.pair);
+}
+function socResume() {
+  if (!Soc.acct) return;
+  refreshMe();
+  if (Soc.open && Soc.chats[Soc.open]) loadPair(Soc.open);
+  socConnect();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(sockRetry); try { sock && sock.close(); } catch (e) {} } // closed app = push, not socket
+  else socResume();
+});
+
+/** iPhone: the same Web Push subscription that delivers reminders also delivers messages. */
+async function socPushSync() {
+  if (!Soc.acct || Native.has || !PUSH_SUPPORTED || Notification.permission !== 'granted') return;
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) { await api('/me', { sub: sub.toJSON(), tz: TZ }); if (Soc.me) Soc.me.push = true; }
+  } catch (e) {}
+}
+
 /* ================= reminders ================= */
 // One plan, two deliverers. The plan is derived purely from app data; Android arms it as exact
 // on-device alarms, iPhone (which can't schedule locally) sends it to the Orbit push server.
@@ -932,6 +1118,15 @@ const plan = computed(() => {
       if (i === 0 && (S.cycleLog[k] || {}).pill) continue;
       const d = parseKey(k); d.setHours(h, m, 0, 0);
       out.push({ id: 'pill:' + k, at: d.getTime(), ch: 'cycle', title: '💊 Pill reminder', body: 'Time to take your pill', go: 'cycle' });
+    }
+  }
+  // Android arms the daily question as an exact local alarm (iPhone gets it as push from the server)
+  if (Native.has) for (const p of socPairs.value) {
+    if (!p.type) continue;
+    for (const at of OrbitSchedule.ruleTimes({ kind: 'daily', times: [p.time], days: ALL_DAYS }, Date.now(), p.tz, 7)) {
+      const day = OrbitSchedule.dayKey(OrbitSchedule.localParts(at, p.tz));
+      if (p.today && p.today.day === day) continue; // that day's question was already asked
+      out.push({ id: 'dq:' + p.id + ':' + day, at, ch: 'social', title: '💬 Today\'s question with ' + whoName(p.with), body: 'Answer it, then see what ' + whoName(p.with) + ' said', go: 'pair:' + p.id });
     }
   }
   return out.filter(r => r.at >= now).sort((a, b) => a.at - b.at);
@@ -1095,6 +1290,7 @@ async function enablePush() {
     const d = await res.json();
     Rem.push = { token: d.id + '.' + d.token, since: Date.now() }; savePush();
     await syncNow();
+    socPushSync();
     say('Notifications are on ✅');
   } catch (e) {
     say('Couldn\'t reach the reminder server. Check your connection and try again');
@@ -1108,6 +1304,7 @@ async function disablePush() {
     if (sub) await sub.unsubscribe();
   } catch (e) {}
   Rem.push = {}; savePush(); Rem.state = 'idle'; Rem.busy = false;
+  if (Soc.acct) api('/me', { sub: null }).catch(() => {});
   say('Notifications turned off');
 }
 async function testNotify() {
@@ -1137,16 +1334,18 @@ function drainNative() {
   }
 }
 window.orbitResume = () => {
-  drainNative(); refreshAndroidStatus();
+  drainNative(); refreshAndroidStatus(); socResume();
   const added = smsSync();
   if (added.length === 1) say('New transaction: ' + fmt(added[0].amount) + ' T. Add a category');
   else if (added.length > 1) say(added.length + ' new bank transactions to review');
 };
 window.orbitGo = where => {
+  if (where && where.startsWith('pair:')) { Soc.open = where.slice(5); nav.screen = 'pair'; return; }
   const tabs = ['today', 'tasks', 'habits', 'money', 'more'];
   if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
 };
 drainNative(); refreshAndroidStatus(); smsRefresh();
+if (Soc.acct) { socNative(); refreshMe().then(socPushSync); socConnect(); }
 
 /* ================= base components ================= */
 const Ic = {
@@ -1586,6 +1785,14 @@ const TodayView = {
       </div>
     </div>
 
+    <div v-if="socTodo.total" class="card people-card tap" style="margin-top:14px" @click="socTodo.questions.length === 1 && !socTodo.unread && !socTodo.reqs ? go('pair:' + socTodo.questions[0].id) : go('people')">
+      <div class="sec" style="margin-bottom:8px"><h3><Ic n="users" :s="16" style="color:var(--c-people)"/>People</h3><span class="link">Open <Ic n="chevron-right" :s="16"/></span></div>
+      <div v-for="x in socTodo.questions.slice(0, 2)" :key="x.id" class="pq"><b>💬 {{ whoName(x.with) }}</b><span>{{ x.today.q }}</span></div>
+      <div v-if="socTodo.unread" class="muted" style="font-size:14px;margin-top:4px">{{ socTodo.unread }} new message{{ socTodo.unread > 1 ? 's' : '' }}</div>
+      <div v-if="socTodo.reqs" class="muted" style="font-size:14px;margin-top:4px">{{ socTodo.reqs }} connection request{{ socTodo.reqs > 1 ? 's' : '' }}</div>
+      <div v-if="socTodo.proposals" class="muted" style="font-size:14px;margin-top:4px">Someone set your relationship type. Tap to accept</div>
+    </div>
+
     <div class="card" style="margin-top:14px">
       <div class="sec"><h3>Today's tasks <span class="badge" v-if="openCount">{{ openCount }}</span></h3>
         <button class="link" @click="nav.tab = 'tasks'">All tasks <Ic n="chevron-right" :s="16"/></button></div>
@@ -1983,6 +2190,14 @@ const MoreView = {
         { id: 'mood', n: 'smile', l: 'Mood', c: 'var(--c-mood)', s: m ? MOODS[m.v - 1].e + ' ' + MOODS[m.v - 1].l : 'Not logged today' },
         { id: 'countdowns', n: 'hourglass', l: 'Countdowns', c: 'var(--c-count)', s: nx ? (nx.days ? nx.days + ' days to ' + nx.c.title : nx.c.title + ' is today!') : 'Nothing planned' },
         { id: 'cycle', n: 'flower-2', l: 'Cycle', c: 'var(--c-cycle)', s: c.has ? 'Day ' + c.day + ' · ' + c.phase : 'Set up tracking' },
+        { id: 'people', n: 'users', l: 'People', c: 'var(--c-people)', dot: socTodo.value.total, s: (() => {
+          const t = socTodo.value;
+          if (!Soc.acct) return 'Daily questions & chat';
+          if (t.questions.length) return 'Today\'s question is waiting';
+          if (t.unread) return t.unread + ' new message' + (t.unread > 1 ? 's' : '');
+          if (t.reqs) return t.reqs + ' request' + (t.reqs > 1 ? 's' : '');
+          return socPairs.value.length + ' connection' + (socPairs.value.length === 1 ? '' : 's');
+        })() },
       ];
     });
     return { apps };
@@ -1991,7 +2206,7 @@ const MoreView = {
     <header class="top"><div class="grow"><h1>More</h1><div class="sub">All your tools</div></div></header>
     <div class="apps">
       <button v-for="a in apps" :key="a.id" class="app-tile tap" :style="{'--c': a.c}" @click="go(a.id)">
-        <div class="ico"><Ic :n="a.n" :s="22" :w="2.2"/></div><b>{{ a.l }}</b><small>{{ a.s }}</small></button>
+        <div class="ico"><Ic :n="a.n" :s="22" :w="2.2"/><i v-if="a.dot" class="tab-dot"></i></div><b>{{ a.l }}</b><small>{{ a.s }}</small></button>
     </div>
     <div class="label" style="margin-top:26px">App</div>
     <div class="settings-group">
@@ -2399,7 +2614,13 @@ const CycleView = {
     const cs = S.settings.cycle;
     const who = computed(() => cs.name.trim());
     const startDate = ref(R.today);
-    function logStart() { if (!S.cycleDays.includes(startDate.value)) S.cycleDays.push(startDate.value); Native.vibrate(14); if (Native.has) Native.askNotify(); }
+    // "next" lets someone start before a period is logged: they give the expected date and we estimate backwards
+    const startMode = ref('last'), nextDate = ref(addDays(R.today, 7));
+    function logStart() {
+      if (startMode.value === 'next') cs.expected = nextDate.value;
+      else if (!S.cycleDays.includes(startDate.value)) S.cycleDays.push(startDate.value);
+      Native.vibrate(14); if (Native.has) Native.askNotify();
+    }
     const primary = computed(() => {
       const t = R.today;
       if (S.cycleDays.includes(t)) return { l: 'Period logged', ghost: true };
@@ -2454,7 +2675,7 @@ const CycleView = {
     const history = computed(() => [...cycStats.value.cycles].reverse().slice(0, 10));
     const tipShift = ref(0);
     const tip = computed(() => cycleTip(R.today, tipShift.value));
-    return { tip, tipShift, tab, cfg, dayOpen, guide, cm, shift, cells, jRange, who, startDate, logStart, primary, periodToday, tapDay, pk, g, chance, goalLine, todaySummary, upcoming, maxLen, bbtPath, history, cs, WK, MONTHS, PHASES, GOALS, SYMPTOMS };
+    return { tip, tipShift, tab, cfg, dayOpen, guide, cm, shift, cells, jRange, who, startDate, startMode, nextDate, logStart, primary, periodToday, tapDay, pk, g, chance, goalLine, todaySummary, upcoming, maxLen, bbtPath, history, cs, WK, MONTHS, PHASES, GOALS, SYMPTOMS };
   },
   template: `<div class="view" style="--acc:var(--c-cycle)">
     <Head title="Cycle" :sub="who ? 'Tracking for ' + who + ' 💗' : 'Your period & fertility tracker'"><button class="icon-btn" @click="cfg = true" aria-label="Cycle settings"><Ic n="settings" :s="19"/></button></Head>
@@ -2463,14 +2684,24 @@ const CycleView = {
       <div class="card" style="text-align:center;padding:28px 20px">
         <div style="font-size:48px">🌸</div>
         <h2 style="font-size:20px;font-weight:750;margin-top:8px">Let's set things up</h2>
-        <p class="muted" style="margin-top:6px">When did {{ who ? who + '\\'s' : 'your' }} last period start? Predictions get smarter with every cycle you log.</p>
+        <p class="muted" style="margin-top:6px">Start from {{ who ? who + '\\'s' : 'your' }} last period, or from when the next one is due. Predictions get smarter with every cycle you log.</p>
         <span class="flabel" style="text-align:left">What's the goal?</span>
         <div class="goal-pick"><button v-for="x in GOALS" :key="x.id" :class="{on: cs.goal === x.id}" @click="cs.goal = x.id"><span>{{ x.e }}</span><b>{{ x.l }}</b></button></div>
         <span class="flabel" style="text-align:left">Name (optional)</span>
         <input class="field" v-model="cs.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
-        <span class="flabel" style="text-align:left">Last period started</span>
-        <label class="field row" style="position:relative;text-align:left"><Ic n="calendar" :s="18" class="muted"/><span class="grow">{{ gFull(startDate) }}</span><span class="muted" style="font-size:13px">{{ jFull(startDate) }}</span>
-          <input type="date" class="overlay-input" v-model="startDate" :max="R.today"></label>
+        <span class="flabel" style="text-align:left">Start from</span>
+        <div class="seg"><button :class="{on: startMode === 'last'}" @click="startMode = 'last'">Last period</button><button :class="{on: startMode === 'next'}" @click="startMode = 'next'">Next period</button></div>
+        <template v-if="startMode === 'last'">
+          <span class="flabel" style="text-align:left">Last period started</span>
+          <label class="field row" style="position:relative;text-align:left"><Ic n="calendar" :s="18" class="muted"/><span class="grow">{{ gFull(startDate) }}</span><span class="muted" style="font-size:13px">{{ jFull(startDate) }}</span>
+            <input type="date" class="overlay-input" v-model="startDate" :max="R.today"></label>
+        </template>
+        <template v-else>
+          <span class="flabel" style="text-align:left">Next period expected</span>
+          <label class="field row" style="position:relative;text-align:left"><Ic n="calendar" :s="18" class="muted"/><span class="grow">{{ gFull(nextDate) }}</span><span class="muted" style="font-size:13px">{{ jFull(nextDate) }}</span>
+            <input type="date" class="overlay-input" v-model="nextDate" :min="R.today" :max="addDays(R.today, cs.len)"></label>
+          <div class="list-row" style="text-align:left;padding:14px 2px 0;border:0"><div class="grow"><div class="t">Usual cycle length</div><div class="s">Used to estimate where you are now</div></div><Stepper v-model="cs.len" :min="20" :max="45" unit="d"/></div>
+        </template>
         <button class="btn primary block" style="margin-top:20px" @click="logStart">Start tracking</button>
       </div>
     </template>
@@ -2489,6 +2720,7 @@ const CycleView = {
           </div>
           <div class="msg">{{ cyc.toNext > 1 ? 'Next period in ' + cyc.toNext + ' days' : cyc.toNext === 1 ? 'Period expected tomorrow' : cyc.toNext === 0 ? 'Period expected today' : 'Period is ' + -cyc.toNext + ' day' + (cyc.toNext === -1 ? '' : 's') + ' late' }}</div>
           <div class="msg2">{{ gFull(cyc.next) }} · {{ jFull(cyc.next) }}</div>
+          <div v-if="cyc.est" class="msg2" style="margin-top:6px">Estimated from the date you gave. Log your period when it starts and Orbit takes it from there.</div>
           <div v-if="goalLine" class="goal-line" :class="cs.goal">{{ goalLine }}</div>
           <div class="msg2" v-else style="margin-top:12px;color:var(--text-2)">{{ cyc.tip }}</div>
           <div class="btn-row" style="margin-top:16px">
@@ -2566,7 +2798,7 @@ const CycleView = {
           <div class="kpi"><small>Average cycle</small><b>{{ cyc.len }} days</b><span class="muted">{{ cycStats.shortest ? cycStats.shortest + '–' + cycStats.longest + ' days' : 'from your settings' }}</span></div>
           <div class="kpi"><small>Average period</small><b>{{ cyc.plen }} days</b><span class="muted">{{ cycStats.cycles.filter(c => c.plen).length }} logged</span></div>
           <div class="kpi"><small>Regularity</small><b style="font-size:19px">{{ cycStats.regularity.l }}</b><span class="muted">{{ cycStats.regularity.s }}</span></div>
-          <div class="kpi"><small>Cycles tracked</small><b>{{ cyc.periods.length }}</b><span class="muted">predictions ±{{ cycStats.margin }} days</span></div>
+          <div class="kpi"><small>Cycles tracked</small><b>{{ cycStats.cycles.length }}</b><span class="muted">predictions ±{{ cycStats.margin }} days</span></div>
         </div>
 
         <div class="card" v-if="cycStats.cycles.some(c => c.clen)">
@@ -2642,6 +2874,8 @@ const CycleView = {
         <div class="settings-group" style="box-shadow:none;margin-top:16px">
           <div class="list-row"><div class="grow"><div class="t">Typical cycle length</div><div class="s">Used until 2+ cycles are logged</div></div><Stepper v-model="cs.len" :min="20" :max="45" unit="d"/></div>
           <div class="list-row"><div class="grow"><div class="t">Typical period length</div></div><Stepper v-model="cs.plen" :min="2" :max="10" unit="d"/></div>
+          <div v-if="cyc.est" class="list-row"><div class="grow"><div class="t">Next period expected</div><div class="s">Until your first period is logged</div></div>
+            <label class="chip on time-chip"><Ic n="calendar" :s="15"/>{{ gLabel(cs.expected) }}<input type="date" v-model="cs.expected" :min="R.today" :max="addDays(R.today, cs.len)"></label></div>
         </div>
         <div class="label">Reminders</div>
         <div class="settings-group" style="box-shadow:none">
@@ -2656,8 +2890,408 @@ const CycleView = {
         <div class="settings-group" style="box-shadow:none">
           <div class="list-row"><div class="grow"><div class="t">Show on Today screen</div><div class="s">Turn off to keep cycle info out of sight</div></div><Toggle v-model="cs.showToday"/></div>
         </div>
-        <button v-if="S.cycleDays.length || Object.keys(S.cycleLog).length" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); S.cycleLog = {}; cfg = false; say('Cycle data cleared')">Clear all cycle data</button>
+        <button v-if="S.cycleDays.length || Object.keys(S.cycleLog).length || cs.expected" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); S.cycleLog = {}; cs.expected = ''; cfg = false; say('Cycle data cleared')">Clear all cycle data</button>
       </div>
+    </Sheet>
+  </div>`,
+};
+
+const AVATARS = ['🙂', '😎', '🦊', '🐼', '🐱', '🦋', '🌸', '🌙', '⭐', '🔥', '🍀', '🎧'];
+function shareText(text, done) {
+  if (!AN && navigator.share) { navigator.share({ text }).catch(() => {}); return; }
+  try { navigator.clipboard.writeText(text).then(() => say(done || 'Copied'), () => say('Couldn\'t copy')); } catch (e) { say('Couldn\'t copy'); }
+}
+/** One line about where a connection stands, for the list. */
+function pairLine(p) {
+  const me = Soc.acct && Soc.acct.handle, nm = whoName(p.with);
+  if (p.proposal && p.proposal.by !== me) return { t: nm + ' says you are ' + REL[p.proposal.type].l + ' ' + REL[p.proposal.type].e, hot: true };
+  if (!p.type) return { t: p.proposal ? 'Waiting for ' + nm + ' to accept' : 'Choose what you are to each other', hot: !p.proposal };
+  if (p.today && p.today.day === p.todayKey && !p.today.mine) return { t: '💬 Today\'s question is waiting' + (p.today.theyAnswered ? ' · ' + nm + ' answered' : ''), hot: true };
+  if (p.today && p.today.day === p.todayKey && !p.today.theirs) return { t: 'You answered · waiting for ' + nm };
+  if (p.last) return { t: (p.last.by === me ? 'You: ' : '') + clip(p.last.text, 60) };
+  return { t: 'Say hi 👋' };
+}
+
+const PeopleView = {
+  setup() {
+    const f = reactive({ handle: '', name: S.settings.name || '', emoji: '🙂', key: '', keyMode: false, busy: false, err: '' });
+    const handleOk = computed(() => /^@?[a-zA-Z][a-zA-Z0-9_.]{2,19}$/.test(f.handle.trim()));
+    async function signup() {
+      f.busy = true; f.err = '';
+      try { await socStart(await api('/signup', { handle: f.handle.trim(), name: f.name.trim(), emoji: f.emoji, tz: TZ })); say('Welcome! Your ID is @' + Soc.acct.handle); Native.askNotify(); }
+      catch (e) { f.err = netErr(e); } finally { f.busy = false; }
+    }
+    async function signin() {
+      const key = f.key.trim(), m = /^([a-z][a-z0-9_.]{2,19}):[A-Za-z0-9_-]{40,64}$/.exec(key);
+      if (!m) { f.err = 'That doesn\'t look like an Orbit login key'; return; }
+      f.busy = true; f.err = '';
+      try {
+        Soc.acct = { handle: m[1], token: key, seen: 0 };
+        await api('/me');
+        await socStart({ handle: m[1], token: key });
+        say('Signed in as @' + m[1]);
+      } catch (e) { Soc.acct = null; saveSoc(); f.err = e.status === 401 ? 'That key doesn\'t work anymore' : netErr(e); } finally { f.busy = false; }
+    }
+
+    const q = ref(''), found = ref(null), searching = ref(false), missing = ref('');
+    async function find() {
+      const h = q.value.trim().replace(/^@/, '').toLowerCase();
+      if (!h) return;
+      searching.value = true; found.value = null; missing.value = '';
+      try { found.value = await api('/find?h=' + encodeURIComponent(h)); }
+      catch (e) { missing.value = e.status === 404 ? 'No one has the ID @' + h : netErr(e); } finally { searching.value = false; }
+    }
+    const busyH = ref('');
+    async function act(path, h, msg) {
+      busyH.value = h;
+      try {
+        const r = await api(path, path === '/connect' || path === '/cancel' ? { to: h } : { from: h });
+        await refreshMe();
+        if (found.value && found.value.handle === h) found.value = null, q.value = '';
+        if (r.pair) { say('You\'re connected 🎉'); Soc.open = r.pair.id; nav.screen = 'pair'; } else if (msg) say(msg);
+        Native.vibrate(15);
+      } catch (e) { say(netErr(e)); } finally { busyH.value = ''; }
+    }
+    const inReqs = computed(() => (Soc.me ? Object.entries(Soc.me.inReq).map(([h, p]) => ({ ...p, handle: h })) : []));
+    const outReqs = computed(() => (Soc.me ? Object.entries(Soc.me.outReq).map(([h, p]) => ({ ...p, handle: h })) : []));
+    const list = computed(() => [...socPairs.value].map(p => ({ p, line: pairLine(p) }))
+      .sort((a, b) => (b.line.hot + (b.p.unread > 0)) - (a.line.hot + (a.p.unread > 0)) || ((b.p.last || {}).at || 0) - ((a.p.last || {}).at || 0)));
+    function open(p) { Soc.open = p.id; nav.screen = 'pair'; }
+
+    const menu = ref(false), del = ref(false), prof = reactive({ name: '', emoji: '' });
+    watch(menu, o => { if (o && Soc.me) { prof.name = Soc.me.name; prof.emoji = Soc.me.emoji; } });
+    async function saveProfile() {
+      try { await api('/me', { name: prof.name.trim(), emoji: prof.emoji }); await refreshMe(); menu.value = false; say('Profile updated'); } catch (e) { say(netErr(e)); }
+    }
+    async function deleteAccount() {
+      try { await api('/me', null, 'DELETE'); del.value = false; menu.value = false; socSignOut('Your Orbit ID and conversations were deleted'); } catch (e) { say(netErr(e)); }
+    }
+    const notifOff = computed(() => !Native.has && !(PUSH_SUPPORTED && Rem.perm === 'granted' && Soc.me && Soc.me.push));
+    onMounted(() => { if (Soc.acct) refreshMe(); });
+    return { f, handleOk, signup, signin, q, found, searching, missing, find, busyH, act, inReqs, outReqs, list, open, menu, del, prof, saveProfile, deleteAccount, notifOff, AVATARS, shareText, socSignOut };
+  },
+  template: `<div class="view" style="--acc:var(--c-people)">
+    <Head title="People" sub="Daily questions & chat"><button v-if="Soc.acct" class="icon-btn" @click="menu = true" aria-label="People settings"><Ic n="settings" :s="19"/></button></Head>
+
+    <template v-if="!Soc.acct">
+      <div class="card" style="text-align:center;padding:26px 18px">
+        <div style="font-size:46px">💬</div>
+        <h2 style="font-size:20px;font-weight:750;margin-top:8px">Closer, one question a day</h2>
+        <p class="muted" style="margin-top:6px;font-size:14.5px">Connect with your partner, friends or family. Each day you both answer the same question, and you only see their answer after sending yours.</p>
+        <template v-if="!f.keyMode">
+          <span class="flabel" style="text-align:left">Pick your look</span>
+          <div class="chips" style="justify-content:center"><button v-for="e in AVATARS" :key="e" class="chip av-pick" :class="{on: f.emoji === e}" @click="f.emoji = e">{{ e }}</button></div>
+          <span class="flabel" style="text-align:left">Your name</span>
+          <input class="field" v-model="f.name" placeholder="How friends see you" maxlength="40" enterkeyhint="next">
+          <span class="flabel" style="text-align:left">Choose your ID</span>
+          <label class="field row" style="text-align:left"><span class="muted" style="font-weight:700">@</span><input class="grow" v-model="f.handle" placeholder="e.g. ali.y" maxlength="21" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" @keydown.enter="handleOk && signup()" style="background:none;border:0;outline:none;font-size:16px;padding:0;min-width:0"></label>
+          <div class="muted" style="font-size:12.5px;text-align:left;margin:6px 4px 0">Others find you by this ID. 3–20 letters, numbers, dots or underscores.</div>
+          <div v-if="f.err" class="form-err">{{ f.err }}</div>
+          <button class="btn primary block" style="margin-top:18px" :disabled="!handleOk || f.busy" @click="signup">{{ f.busy ? 'Creating…' : 'Create my ID' }}</button>
+          <button class="link-btn" style="margin-top:12px" @click="f.keyMode = true; f.err = ''">Already have an ID? Sign in with your key</button>
+        </template>
+        <template v-else>
+          <span class="flabel" style="text-align:left">Login key</span>
+          <textarea class="field" v-model="f.key" placeholder="yourid:…" style="min-height:76px;font-family:monospace;font-size:13px" autocapitalize="none" spellcheck="false"></textarea>
+          <div class="muted" style="font-size:12.5px;text-align:left;margin:6px 4px 0">Copy it from People → settings on your other phone.</div>
+          <div v-if="f.err" class="form-err">{{ f.err }}</div>
+          <button class="btn primary block" style="margin-top:18px" :disabled="!f.key.trim() || f.busy" @click="signin">{{ f.busy ? 'Signing in…' : 'Sign in' }}</button>
+          <button class="link-btn" style="margin-top:12px" @click="f.keyMode = false; f.err = ''">Create a new ID instead</button>
+        </template>
+        <p class="muted" style="font-size:12px;margin-top:16px"><Ic n="lock" :s="12" style="vertical-align:-1px"/> Messages and answers are kept on the Orbit server so both of you can see them. Everything else in Orbit stays on this phone.</p>
+      </div>
+    </template>
+
+    <template v-else-if="Soc.me">
+      <div class="card me-card">
+        <span class="av lg">{{ Soc.me.emoji }}</span>
+        <div class="grow"><div style="font-weight:700;font-size:17px">{{ Soc.me.name }}</div><div class="muted" style="font-size:14px;font-weight:600">@{{ Soc.me.handle }}</div></div>
+        <button class="btn sm" @click="shareText('Add me on Orbit: @' + Soc.me.handle, 'ID copied')"><Ic n="copy" :s="16"/>Share ID</button>
+      </div>
+
+      <button v-if="notifOff" class="card notice tap" @click="PUSH_SUPPORTED ? enablePush() : go('alerts')">
+        <Ic n="bell" :s="18"/><span class="grow">Turn on notifications to hear about new messages and your daily question</span><Ic n="chevron-right" :s="16"/></button>
+
+      <div class="card">
+        <div class="sec" style="margin-bottom:10px"><h3><Ic n="user-plus" :s="17"/>Add someone</h3></div>
+        <div class="search-row">
+          <label class="field row grow"><span class="muted" style="font-weight:700">@</span><input class="grow" v-model="q" placeholder="Their ID" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="search" @keydown.enter="find" style="background:none;border:0;outline:none;font-size:16px;padding:0;min-width:0"></label>
+          <button class="btn primary" style="height:50px;width:56px;padding:0" :disabled="!q.trim() || searching" @click="find" aria-label="Search"><Ic n="search" :s="19"/></button>
+        </div>
+        <div v-if="missing" class="muted" style="font-size:14px;margin:12px 4px 0">{{ missing }}</div>
+        <div v-if="found" class="list-row" style="border:0;padding-bottom:0">
+          <span class="av">{{ found.emoji }}</span>
+          <div class="grow"><div class="t">{{ found.name }}</div><div class="s">@{{ found.handle }}</div></div>
+          <span v-if="found.self" class="badge">That's you</span>
+          <span v-else-if="found.connected" class="badge">Connected</span>
+          <span v-else-if="Soc.me.outReq[found.handle]" class="badge">Requested</span>
+          <button v-else class="btn sm primary" :disabled="busyH === found.handle" @click="act('/connect', found.handle, 'Request sent to ' + found.name)">{{ Soc.me.inReq[found.handle] ? 'Accept' : 'Connect' }}</button>
+        </div>
+      </div>
+
+      <template v-if="inReqs.length">
+        <div class="label">Requests</div>
+        <div class="settings-group">
+          <div v-for="r in inReqs" :key="r.handle" class="list-row">
+            <span class="av">{{ r.emoji }}</span>
+            <div class="grow"><div class="t">{{ r.name }}</div><div class="s">@{{ r.handle }} wants to connect</div></div>
+            <button class="icon-btn plain" :disabled="busyH === r.handle" @click="act('/decline', r.handle, 'Request declined')" aria-label="Decline"><Ic n="x" :s="19"/></button>
+            <button class="btn sm primary" :disabled="busyH === r.handle" @click="act('/accept', r.handle)">Accept</button>
+          </div>
+        </div>
+      </template>
+
+      <div class="label">Connections</div>
+      <div v-if="list.length" class="settings-group">
+        <button v-for="x in list" :key="x.p.id" class="list-row" style="width:100%;text-align:left" @click="open(x.p)">
+          <span class="av">{{ x.p.with.emoji || '🙂' }}</span>
+          <div class="grow"><div class="t">{{ whoName(x.p.with) }} <span v-if="x.p.type" class="rel-tag">{{ REL[x.p.type].e }} {{ REL[x.p.type].l }}</span></div>
+            <div class="s" :class="{hot: x.line.hot}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ x.line.t }}</div></div>
+          <span v-if="x.p.unread" class="badge unread">{{ x.p.unread }}</span>
+          <span v-else-if="x.line.hot" class="dot" style="background:var(--c-people)"></span>
+        </button>
+      </div>
+      <div v-else class="card"><Empty e="🫶" t="No connections yet" s="Share your ID or search for someone's ID above."/></div>
+
+      <template v-if="outReqs.length">
+        <div class="label">Sent</div>
+        <div class="settings-group">
+          <div v-for="r in outReqs" :key="r.handle" class="list-row">
+            <span class="av">{{ r.emoji }}</span>
+            <div class="grow"><div class="t">{{ r.name }}</div><div class="s">Waiting for @{{ r.handle }} to accept</div></div>
+            <button class="btn sm" :disabled="busyH === r.handle" @click="act('/cancel', r.handle, 'Request cancelled')">Cancel</button>
+          </div>
+        </div>
+      </template>
+    </template>
+    <div v-else class="card"><Empty e="⏳" t="Loading…" s="Connecting to Orbit"/></div>
+
+    <Sheet :open="menu" title="Your profile" @close="menu = false">
+      <div v-if="Soc.me" style="--acc:var(--c-people)">
+        <div class="chips"><button v-for="e in AVATARS" :key="e" class="chip av-pick" :class="{on: prof.emoji === e}" @click="prof.emoji = e">{{ e }}</button></div>
+        <span class="flabel">Name</span>
+        <input class="field" v-model="prof.name" maxlength="40" enterkeyhint="done">
+        <button class="btn primary block" style="margin-top:14px" :disabled="!prof.name.trim()" @click="saveProfile">Save</button>
+        <div class="label">Your ID on another phone</div>
+        <div class="settings-group" style="box-shadow:none">
+          <button class="list-row" style="width:100%;text-align:left" @click="shareText(Soc.acct.token, 'Login key copied. Keep it private')">
+            <span class="bubble" style="--c:var(--c-people)"><Ic n="key-round" :s="18"/></span>
+            <div class="grow"><div class="t">Copy login key</div><div class="s">Anyone with this key can read your chats. Keep it private</div></div></button>
+          <button class="list-row" style="width:100%;text-align:left" @click="menu = false; socSignOut('Signed out. Use your login key to sign back in')">
+            <span class="bubble" style="--c:var(--muted)"><Ic n="log-out" :s="18"/></span>
+            <div class="grow"><div class="t">Sign out on this phone</div><div class="s">Copy your login key first, or you can't get back in</div></div></button>
+          <button class="list-row" style="width:100%;text-align:left" @click="del = true">
+            <span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
+            <div class="grow"><div class="t" style="color:var(--c-danger)">Delete my ID</div><div class="s">Removes all your connections and conversations</div></div></button>
+        </div>
+      </div>
+    </Sheet>
+    <Sheet :open="del" title="Delete your ID?" @close="del = false">
+      <p class="muted">Your connections, chats and answers will be deleted for everyone. This can't be undone.</p>
+      <div class="btn-row"><button class="btn" @click="del = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="deleteAccount">Delete</button></div>
+    </Sheet>
+  </div>`,
+};
+
+/** The relationship picker: proposing a type needs the other person to accept it. */
+const RelPick = {
+  props: { p: Object },
+  emits: ['done'],
+  setup(props, { emit }) {
+    const busy = ref('');
+    async function pick(t) {
+      busy.value = t;
+      try {
+        const r = await api('/p/' + props.p.id + '/type', { type: t });
+        await loadPair(props.p.id);
+        say(r.set ? 'You\'re now ' + REL[t].l + ' ' + REL[t].e : 'Sent. ' + whoName(props.p.with) + ' needs to accept');
+        Native.vibrate(15); emit('done');
+      } catch (e) { say(netErr(e)); } finally { busy.value = ''; }
+    }
+    return { busy, pick, TYPES: OrbitQuestions.TYPES };
+  },
+  template: `<div class="rel-grid">
+    <button v-for="t in TYPES" :key="t.id" class="rel-btn" :class="{on: p.type === t.id, prop: p.proposal && p.proposal.type === t.id}" :disabled="!!busy" @click="pick(t.id)">
+      <span>{{ t.e }}</span><b>{{ t.l }}</b></button>
+  </div>`,
+};
+
+const PairView = {
+  setup() {
+    const id = Soc.open;
+    const st = computed(() => Soc.chats[id]);
+    const p = computed(() => pairOf(id) || st.value);
+    const meH = computed(() => Soc.acct && Soc.acct.handle);
+    const nm = computed(() => (p.value ? whoName(p.value.with) : ''));
+    const tab = ref(null);
+    const needsQ = c => !c.type || (c.proposal && c.proposal.by !== meH.value) || (c.today && c.today.day === c.todayKey && !c.today.mine);
+    const cached = pairOf(id);
+    if (cached) tab.value = needsQ(cached) ? 'q' : 'chat';
+    loadPair(id).then(c => { if (c && !tab.value) tab.value = needsQ(c) ? 'q' : 'chat'; });
+
+    // chat
+    const draft = ref(''), box = ref(null);
+    const toBottom = (smooth) => nextTick(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }));
+    watch(() => st.value && st.value.messages.length, (n, o) => { if (tab.value === 'chat') { toBottom(!!o); markRead(id); } });
+    watch(tab, t => { if (t === 'chat') { toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
+    function send() { const t = draft.value; if (!t.trim()) return; draft.value = ''; sendMsg(id, t); Native.vibrate(8); if (box.value) box.value.style.height = ''; }
+    function grow(e) { const el = e.target; el.style.height = ''; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; }
+    const rows = computed(() => {
+      const out = []; let lastDay = '';
+      for (const m of (st.value ? st.value.messages : [])) {
+        const k = keyOf(new Date(m.at));
+        if (k !== lastDay) { out.push({ sep: rel(k) === 'Today' ? 'Today' : gFull(k), key: 'sep' + k }); lastDay = k; }
+        out.push({ m, key: m.s ? 's' + m.s : 'c' + m.cid });
+      }
+      return out;
+    });
+    const older = ref(false), noMore = ref(false);
+    async function loadOlder() {
+      const c = st.value, first = c && c.messages.find(m => m.s);
+      if (!first) return;
+      older.value = true;
+      try {
+        const more = await api('/p/' + id + '/messages?before=' + first.s);
+        if (more.length < 60) noMore.value = true;
+        c.messages.unshift(...more.filter(m => !c.messages.some(x => x.s === m.s)));
+      } catch (e) { say(netErr(e)); } finally { older.value = false; }
+    }
+
+    // daily question
+    const drafts = reactive({}), sending = ref('');
+    async function answer(d) {
+      const text = (drafts[d.day] || '').trim();
+      if (!text) return;
+      sending.value = d.day;
+      try {
+        const r = await api('/p/' + id + '/answer', { day: d.day, text });
+        const days = st.value.days, i = days.findIndex(x => x.day === d.day);
+        if (i >= 0) days.splice(i, 1, r.day);
+        delete drafts[d.day];
+        say(r.day.theirs ? 'Here\'s what ' + nm.value + ' said 💌' : 'Sent! You\'ll see ' + nm.value + '\'s answer when they reply');
+        Native.vibrate(20);
+        refreshMe();
+      } catch (e) { say(netErr(e)); } finally { sending.value = ''; }
+    }
+    const today = computed(() => { const c = st.value; return c && c.days[0] && c.days[0].day === c.todayKey ? c.days[0] : null; });
+    const past = computed(() => (st.value ? st.value.days.filter(d => d !== today.value) : []));
+    async function decline() { try { await api('/p/' + id + '/decline', {}); await loadPair(id); } catch (e) { say(netErr(e)); } }
+    async function accept() {
+      const t = p.value.proposal.type;
+      try { await api('/p/' + id + '/type', { type: t }); await loadPair(id); say('You\'re now ' + REL[t].l + ' ' + REL[t].e); Native.vibrate(20); } catch (e) { say(netErr(e)); }
+    }
+    const relOpen = ref(false), leaveAsk = ref(false);
+    async function setTime(t) {
+      try { await api('/p/' + id + '/time', { time: t, tz: TZ }); await loadPair(id); say('Daily question at ' + t + ' for both of you'); } catch (e) { say(netErr(e)); }
+    }
+    async function leave() {
+      try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
+    }
+    const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
+    return { st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+  },
+  template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)">
+    <header class="top sm">
+      <button class="icon-btn" @click="nav.screen = 'people'" aria-label="Back"><Ic n="chevron-left" :s="22"/></button>
+      <span v-if="p" class="av">{{ p.with.emoji || '🙂' }}</span>
+      <div class="grow" v-if="p"><h1 style="font-size:20px">{{ nm }}</h1><div class="sub" style="margin-top:1px">{{ p.type ? REL[p.type].e + ' ' + REL[p.type].l : '@' + p.with.handle }}</div></div>
+      <button v-if="p" class="icon-btn" @click="relOpen = true" aria-label="Connection settings"><Ic n="settings" :s="19"/></button>
+    </header>
+    <template v-if="st && p">
+      <div class="seg pair-tabs"><button :class="{on: tab === 'q'}" @click="tab = 'q'"><Ic n="heart" :s="15"/>Daily question<span v-if="today && !today.mine" class="dot" style="background:var(--c-people)"></span></button>
+        <button :class="{on: tab === 'chat'}" @click="tab = 'chat'"><Ic n="messages-square" :s="15"/>Chat<span v-if="p.unread" class="badge">{{ p.unread }}</span></button></div>
+
+      <template v-if="tab === 'q'">
+        <div v-if="p.proposal && p.proposal.by !== meH" class="card q-card" style="margin-top:12px">
+          <div style="font-size:34px">{{ REL[p.proposal.type].e }}</div>
+          <h3>{{ nm }} says you are {{ REL[p.proposal.type].l }}</h3>
+          <p class="muted">Accept and you'll both get a question every day that fits your relationship.</p>
+          <div class="btn-row"><button class="btn" @click="decline">Not now</button><button class="btn primary" @click="accept">Accept</button></div>
+          <button class="link-btn" style="margin-top:10px" @click="relOpen = true">Choose something else</button>
+        </div>
+        <div v-else-if="!p.type" class="card q-card" style="margin-top:12px">
+          <h3>What are you to each other?</h3>
+          <p class="muted" v-if="!p.proposal">Pick one. When {{ nm }} accepts, your first question arrives right away, then a new one every day.</p>
+          <p class="muted" v-else>Waiting for {{ nm }} to accept <b>{{ REL[p.proposal.type].l }} {{ REL[p.proposal.type].e }}</b>. You can pick something else.</p>
+          <RelPick :p="p" style="margin-top:14px"/>
+          <button v-if="p.proposal" class="link-btn" style="margin-top:10px" @click="decline">Withdraw</button>
+        </div>
+
+        <template v-if="p.type">
+          <div v-if="today" class="card q-card today" style="margin-top:12px">
+            <div class="q-head"><span>💬 Today's question</span><span class="muted">{{ p.time }}{{ tzNote }}</span></div>
+            <h2 class="q-text">{{ today.q }}</h2>
+            <template v-if="!today.mine">
+              <textarea class="field" v-model="drafts[today.day]" placeholder="Your answer…" maxlength="2000" style="margin-top:14px"></textarea>
+              <div class="q-status"><Ic :n="today.theyAnswered ? 'check' : 'lock'" :s="14"/>{{ today.theyAnswered ? nm + ' has answered. Send yours to see it' : 'You\\'ll see ' + nm + '\\'s answer after you send yours' }}</div>
+              <button class="btn primary block" style="margin-top:12px" :disabled="!(drafts[today.day] || '').trim() || sending === today.day" @click="answer(today)"><Ic n="send" :s="17"/>Send answer</button>
+            </template>
+            <div v-else class="answers">
+              <div class="ans mine"><small>You</small>{{ today.mine }}</div>
+              <div v-if="today.theirs" class="ans theirs"><small>{{ nm }}</small>{{ today.theirs }}</div>
+              <div v-else class="ans waiting"><Ic n="hourglass" :s="15"/>Waiting for {{ nm }}'s answer</div>
+            </div>
+          </div>
+          <div v-else class="card q-card" style="margin-top:12px">
+            <h3>Next question at {{ p.time }}{{ tzNote }}</h3>
+            <p class="muted">You'll both get a notification. Change the time in settings ⚙️</p>
+          </div>
+
+          <template v-if="past.length">
+            <div class="label">Earlier</div>
+            <div v-for="d in past" :key="d.day" class="card q-card past">
+              <div class="q-head"><span>{{ rel(d.day) }}</span></div>
+              <div class="q-text sm">{{ d.q }}</div>
+              <template v-if="!d.mine">
+                <textarea class="field" v-model="drafts[d.day]" placeholder="Answer it now…" maxlength="2000" style="margin-top:10px;min-height:64px"></textarea>
+                <button class="btn sm primary" style="margin-top:8px" :disabled="!(drafts[d.day] || '').trim() || sending === d.day" @click="answer(d)">Send{{ d.theyAnswered ? ' & see theirs' : '' }}</button>
+              </template>
+              <div v-else class="answers">
+                <div class="ans mine"><small>You</small>{{ d.mine }}</div>
+                <div v-if="d.theirs" class="ans theirs"><small>{{ nm }}</small>{{ d.theirs }}</div>
+                <div v-else class="ans waiting">{{ nm }} hasn't answered</div>
+              </div>
+            </div>
+          </template>
+        </template>
+      </template>
+
+      <template v-else>
+        <div class="chat">
+          <button v-if="st.messages.length >= 60 && !noMore" class="link-btn" style="display:block;margin:6px auto" :disabled="older" @click="loadOlder">{{ older ? 'Loading…' : 'Load earlier messages' }}</button>
+          <div v-if="!st.messages.length" class="muted" style="text-align:center;padding:40px 10px">Say hi to {{ nm }} 👋</div>
+          <template v-for="r in rows" :key="r.key">
+            <div v-if="r.sep" class="chat-sep">{{ r.sep }}</div>
+            <div v-else class="msg" :class="{me: r.m.by === meH, failed: r.m.failed}" @click="r.m.failed && retryMsg(id, r.m)">
+              <div class="txt">{{ r.m.text }}</div>
+              <div class="meta">{{ r.m.failed ? 'Not sent · tap to retry' : hm(r.m.at) }}
+                <template v-if="r.m.by === meH && !r.m.failed"><Ic v-if="r.m.pending" n="clock" :s="12"/><Ic v-else :n="st.theirRead >= r.m.s ? 'check-check' : 'check'" :s="13" :class="{seen: st.theirRead >= r.m.s}"/></template></div>
+            </div>
+          </template>
+        </div>
+        <div class="composer">
+          <textarea ref="box" v-model="draft" rows="1" placeholder="Message" maxlength="2000" @input="grow" @keydown.enter.exact="!IOS && !Native.has && ($event.preventDefault(), send())"></textarea>
+          <button class="send" :disabled="!draft.trim()" @pointerdown.prevent @mousedown.prevent @click="send" aria-label="Send"><Ic n="send" :s="19"/></button>
+        </div>
+      </template>
+    </template>
+    <div v-else class="card" style="margin-top:12px"><Empty e="⏳" t="Loading…" s=""/></div>
+
+    <Sheet :open="relOpen" title="Connection" @close="relOpen = false">
+      <div v-if="p" style="--acc:var(--c-people)">
+        <span class="flabel" style="margin-top:2px">What are you to each other?</span>
+        <RelPick :p="p" @done="relOpen = false"/>
+        <div class="muted" style="font-size:12.5px;margin:8px 2px 0">{{ p.proposal ? (p.proposal.by === meH ? 'Waiting for ' + nm + ' to accept ' + REL[p.proposal.type].l : nm + ' suggested ' + REL[p.proposal.type].l) : 'Changes need ' + nm + ' to accept.' }}</div>
+        <div class="settings-group" style="box-shadow:none;margin-top:16px">
+          <div class="list-row"><div class="grow"><div class="t">Daily question time</div><div class="s">The same for both of you{{ tzNote }}</div></div>
+            <label class="chip on time-chip"><Ic n="clock" :s="15"/>{{ p.time }}<input type="time" :value="p.time" @change="setTime($event.target.value)"></label></div>
+        </div>
+        <button class="btn danger block" style="margin-top:18px" @click="leaveAsk = true">Remove {{ nm }}</button>
+      </div>
+    </Sheet>
+    <Sheet :open="leaveAsk" title="Remove connection?" @close="leaveAsk = false">
+      <p class="muted">Your chat and all your answers with {{ nm }} will be deleted for both of you.</p>
+      <div class="btn-row"><button class="btn" @click="leaveAsk = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="leave">Remove</button></div>
     </Sheet>
   </div>`,
 };
@@ -3215,7 +3849,7 @@ const SettingsView = {
       <button class="list-row" style="width:100%;text-align:left" @click="reset = true"><span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
         <div class="grow"><div class="t" style="color:var(--c-danger)">Erase everything</div><div class="s">{{ counts }} items stored on this phone</div></div></button>
     </div>
-    <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · Everything stays on your device 🔒</p>
+    <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · {{ Soc.acct ? 'Everything except People stays on your device' : 'Everything stays on your device' }} 🔒</p>
 
     <Sheet :open="imp" title="Restore backup" @close="imp = false">
       <p class="muted" style="font-size:14px;margin-bottom:12px">Paste the backup text below. This replaces all current data.</p>
@@ -3251,7 +3885,7 @@ const App = {
     ];
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
-      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, reminders: RemindersView,
+      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, reminders: RemindersView, people: PeopleView, pair: PairView,
     };
     const current = computed(() => nav.screen || nav.tab);
     function tab(id) {
@@ -3265,10 +3899,10 @@ const App = {
   template: `<div :class="{kb}">
     <Onboarding v-if="!S.settings.onboarded"/>
     <template v-else>
-      <Transition name="view" mode="out-in" @before-enter="toTop"><component :is="views[current]" :key="current"/></Transition>
+      <Transition name="view" mode="out-in" @before-enter="toTop"><component :is="views[current]" :key="current === 'pair' ? 'pair:' + Soc.open : current"/></Transition>
       <nav class="tabbar">
         <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :style="{'--acc': t.c}" @click="tab(t.id)">
-          <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/></span>{{ t.l }}</button>
+          <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/><i v-if="t.id === 'more' && socTodo.total" class="tab-dot"></i></span>{{ t.l }}</button>
       </nav>
       <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/><RemSheet/>
     </template>
@@ -3280,14 +3914,15 @@ const app = createApp(App);
 Object.assign(app.config.globalProperties, {
   APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
+  Soc, REL, whoName,
   remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
+const live = { socTodo, socPairs, waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
-  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding);
+  .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding).component('RelPick', RelPick);
 app.mount('#app');
 
 if (!Native.has) {

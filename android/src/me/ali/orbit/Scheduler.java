@@ -55,6 +55,7 @@ final class Scheduler {
         channel(nm, "reminders", "Personal reminders", "Reminders you create yourself", NotificationManager.IMPORTANCE_HIGH);
         channel(nm, "focus", "Focus timer", "When a focus session or break ends", NotificationManager.IMPORTANCE_HIGH);
         channel(nm, "cycle", "Cycle", "Upcoming period reminders", NotificationManager.IMPORTANCE_DEFAULT);
+        channel(nm, "social", "People", "Messages, requests and your daily question", NotificationManager.IMPORTANCE_HIGH);
         if (nm.getNotificationChannel("orbit_reminders") != null) nm.deleteNotificationChannel("orbit_reminders");
     }
 
@@ -366,8 +367,16 @@ final class Scheduler {
             case "focus": return 0xFFFF6B5B;
             case "reminders": return 0xFFF5A524;
             case "cycle": return 0xFFFF5C9A;
+            case "social": return 0xFFEC4899;
             default: return 0xFF7C6CFF;
         }
+    }
+
+    /** A People notification fetched by {@link SocialPoll}; one per tag, so a chat's newest message replaces the last. */
+    static void social(Context c, String title, String body, String go, String tag) {
+        Notification.Builder b = base(c, "social", title, body, go, tag);
+        b.setCategory(Notification.CATEGORY_MESSAGE);
+        notify(c, tag.hashCode(), b.build());
     }
 
     private static Notification.Action action(Context c, String act, String id, String label, JSONObject r) {

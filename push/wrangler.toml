@@ -6,7 +6,7 @@ workers_dev = true
 [vars]
 VAPID_PUBLIC = "BOIZ_UH6C3MvvJidPGSXJPTlkmSH9JCffuuC-vxe2Gob0fjkMklZnHq5zKvWkAS6AaBabmwPgtldeZWn9YQpP4I"
 VAPID_SUBJECT = "https://aliyeganegi.github.io/orbit/"
-ALLOWED_ORIGINS = "https://aliyeganegi.github.io"
+ALLOWED_ORIGINS = "https://aliyeganegi.github.io,https://appassets.local"
 
 [[durable_objects.bindings]]
 name = "DEVICE"
@@ -15,3 +15,16 @@ class_name = "Device"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Device"]
+
+# social: one object per user and one per connected pair
+[[durable_objects.bindings]]
+name = "USER"
+class_name = "User"
+
+[[durable_objects.bindings]]
+name = "PAIR"
+class_name = "Pair"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["User", "Pair"]
