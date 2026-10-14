@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.10'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.11'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -1350,8 +1350,25 @@ function drainNative() {
     }
   }
 }
+/* Android updates: new screens arrive by themselves (signed, see WebUpdate.java); a new APK is offered here */
+const Upd = reactive({ info: null, state: '', dismissed: (() => { try { return +localStorage.getItem('orbit.updDismissed') || 0; } catch (e) { return 0; } })() });
+function refreshUpdate() {
+  if (!AN || !AN.updateInfo) return;
+  try { Upd.info = JSON.parse(AN.updateInfo()); if (Upd.info.state && !Upd.state) Upd.state = Upd.info.state; } catch (e) {}
+}
+function installUpdate() { if (AN && AN.installUpdate) { Upd.state = 'downloading'; AN.installUpdate(); } }
+function dismissUpdate() { Upd.dismissed = Upd.info.update.code; try { localStorage.setItem('orbit.updDismissed', Upd.dismissed); } catch (e) {} }
+window.orbitUpdate = st => {
+  if (st !== 'checked' && st !== 'ready') Upd.state = st;
+  if (st === 'failed') say('Couldn\'t download the update. Try again in a bit');
+  if (st === 'permission') say('Allow Orbit to install updates, then tap Install again');
+  refreshUpdate();
+};
+const updAvail = computed(() => (Upd.info && Upd.info.update ? Upd.info.update : null));
+
 window.orbitResume = () => {
-  drainNative(); refreshAndroidStatus(); socResume();
+  drainNative(); refreshAndroidStatus(); socResume(); refreshUpdate();
+  if (Upd.state === 'installing' || Upd.state === 'permission') Upd.state = '';
   const added = smsSync();
   if (added.length === 1) say('New transaction: ' + fmt(added[0].amount) + ' T. Add a category');
   else if (added.length > 1) say(added.length + ' new bank transactions to review');
@@ -1361,7 +1378,7 @@ window.orbitGo = where => {
   const tabs = ['today', 'tasks', 'habits', 'money', 'more'];
   if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
 };
-drainNative(); refreshAndroidStatus(); smsRefresh();
+drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
 if (Soc.acct) { socNative(); refreshMe().then(socPushSync); socConnect(); }
 
 /* ================= base components ================= */
@@ -1783,7 +1800,8 @@ const TodayView = {
     const pinned = computed(() => S.notes.filter(n => n.pinned).slice(0, 2));
     const showCyc = computed(() => cyc.value.has && S.settings.cycle.showToday);
     const both = computed(() => showCyc.value && nextCd.value);
-    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc };
+    const updBanner = computed(() => updAvail.value && updAvail.value.code !== Upd.dismissed);
+    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc, updBanner };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <header class="top">
@@ -1800,6 +1818,13 @@ const TodayView = {
         <h2>{{ hero[0] }}</h2><div class="hl">{{ hero[1] }}</div>
         <div class="stats"><span><Ic n="circle-check" :s="14"/>{{ tDone }}/{{ tTotal }} tasks</span><span><Ic n="flame" :s="14"/>{{ hDone }}/{{ hTotal }} habits</span></div>
       </div>
+    </div>
+
+    <div v-if="updBanner" class="card upd-card">
+      <span class="bubble" style="--c:var(--c-tasks)"><Ic n="download" :s="18"/></span>
+      <div class="grow"><b>Orbit {{ updAvail.name }} is available</b><div class="muted" style="font-size:13px">A quick install, your data stays</div></div>
+      <button class="btn sm primary" :disabled="Upd.state === 'downloading'" @click="installUpdate">{{ Upd.state === 'downloading' ? 'Downloading…' : 'Install' }}</button>
+      <button class="icon-btn plain" @click="dismissUpdate" aria-label="Later"><Ic n="x" :s="17"/></button>
     </div>
 
     <div v-if="socTodo.total" class="card people-card tap" style="margin-top:14px" @click="socTodo.questions.length === 1 && !socTodo.unread && !socTodo.reqs ? go('pair:' + socTodo.questions[0].id) : go('people')">
@@ -3889,6 +3914,17 @@ const SettingsView = {
       <div class="grow"><div class="t">Notifications</div><div class="s">{{ remReady ? 'On · tasks, water, focus & cycle' : 'Off · tap to set up' }}</div></div>
       <span class="dot" :style="{background: remReady ? 'var(--c-habits)' : 'var(--c-focus)'}"></span><Ic n="chevron-right" :s="18" class="muted"/></button></div>
 
+    <template v-if="Native.has && Upd.info">
+      <div class="label">App updates</div>
+      <div class="settings-group">
+        <div class="list-row"><span class="bubble" style="--c:var(--c-tasks)"><Ic n="download" :s="18"/></span>
+          <div class="grow"><div class="t">{{ updAvail ? 'Orbit ' + updAvail.name + ' is available' : 'Orbit is up to date' }}</div>
+            <div class="s">App {{ Upd.info.name }} · screens {{ APP_VERSION }} (build {{ Upd.info.build }}){{ Upd.info.pendingBuild ? ' · new screens next time you open Orbit' : '' }}</div></div>
+          <button v-if="updAvail" class="btn sm primary" :disabled="Upd.state === 'downloading'" @click="installUpdate">{{ Upd.state === 'downloading' ? 'Downloading…' : 'Install' }}</button>
+          <button v-else class="btn sm" @click="AN.checkUpdate(); say('Checking for updates…')">Check</button></div>
+      </div>
+    </template>
+
     <div class="label">Your data</div>
     <div class="settings-group">
       <button class="list-row" style="width:100%;text-align:left" @click="exportData"><span class="bubble" style="--c:var(--c-water)"><Ic n="upload" :s="18"/></span>
@@ -3963,11 +3999,11 @@ const app = createApp(App);
 Object.assign(app.config.globalProperties, {
   APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
-  Soc, REL, whoName,
+  Soc, REL, whoName, Upd, installUpdate, dismissUpdate, AN,
   remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
-const live = { socTodo, socPairs, waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
+const live = { updAvail, socTodo, socPairs, waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
 for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.globalProperties, k, { get: () => c.value });
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)

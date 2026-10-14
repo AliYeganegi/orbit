@@ -53,6 +53,12 @@ public class MainActivity extends Activity {
         if (a != null) a.runOnUiThread(() -> a.js("window.orbitResume && window.orbitResume()"));
     }
 
+    /** Runs JavaScript in the app if it's open (used by background work such as updates). */
+    static void callJs(String code) {
+        MainActivity a = live.get();
+        if (a != null) a.runOnUiThread(() -> a.js(code));
+    }
+
     private void js(String code) {
         if (web != null && loaded) web.evaluateJavascript(code, null);
     }
@@ -87,7 +93,7 @@ public class MainActivity extends Activity {
                 String path = u.getPath();
                 if (path == null || path.equals("/")) path = "/index.html";
                 try {
-                    InputStream in = getAssets().open("www" + path);
+                    InputStream in = WebUpdate.open(MainActivity.this, path.substring(1)); // a downloaded update, or the APK's copy
                     return new WebResourceResponse(mime(path), "utf-8", in);
                 } catch (IOException e) {
                     return new WebResourceResponse("text/plain", "utf-8", 404, "Not found", null, null);
@@ -110,6 +116,7 @@ public class MainActivity extends Activity {
         });
         setContentView(web);
         web.loadUrl("https://" + HOST + "/index.html");
+        WebUpdate.check(this, false);
     }
 
     @Override
@@ -183,6 +190,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        WebUpdate.check(this, false);
         web.onResume();
         js("window.orbitResume && window.orbitResume()");
     }
@@ -202,6 +210,21 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void sync(String planJson) {
             try { Scheduler.sync(MainActivity.this, planJson); } catch (Exception ignored) { }
+        }
+
+        @JavascriptInterface
+        public String updateInfo() {
+            return WebUpdate.info(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void checkUpdate() {
+            WebUpdate.check(MainActivity.this, true);
+        }
+
+        @JavascriptInterface
+        public void installUpdate() {
+            runOnUiThread(() -> WebUpdate.install(MainActivity.this));
         }
 
         @JavascriptInterface

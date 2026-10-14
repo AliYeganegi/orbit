@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="me.ali.orbit">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.READ_SMS" />
@@ -29,6 +30,7 @@
             </intent-filter>
         </activity>
         <receiver android:name=".AlarmReceiver" android:exported="false" />
+        <provider android:name=".UpdateProvider" android:authorities="me.ali.orbit.updates" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".SocialPoll" android:exported="false" android:permission="android.permission.BIND_JOB_SERVICE" />
         <receiver android:name=".SmsReceiver" android:exported="true" android:permission="android.permission.BROADCAST_SMS">
             <intent-filter>

@@ -42,6 +42,22 @@ adb install -r build/Orbit.apk
 
 Keep the signing key (`~/.android/orbit.keystore`); a different key forces an uninstall, which erases app data.
 
+### Android updates without reinstalling
+
+From 1.11 the Android app updates itself like the iPhone version:
+
+- **Screens (almost every change):** after editing `web/`, run `node tools/release.mjs` and push. The app downloads
+  the new files in the background (only the ones that changed), checks each against the signed manifest, and uses them
+  from the next launch. App data is untouched.
+- **New APK (native changes: Java, permissions, manifest):** build it with a higher `VERSION_CODE`, attach it to a
+  GitHub release, then announce it:
+  `node tools/release.mjs --apk android/build/Orbit.apk --code 22 --name 1.12 --url https://github.com/AliYeganegi/orbit/releases/download/v1.12/Orbit-1.12.apk`.
+  The app shows "Orbit 1.12 is available"; one tap downloads it, checks its hash and opens Android's installer.
+- If new screens need new native features, pass `--min-native <versionCode>`: older APKs keep their screens until updated.
+
+Updates are only accepted when `web/update/manifest.json` is signed with `~/.config/orbit/update-key.pem` (P-256,
+public half in `WebUpdate.java`). Keep that key private and backed up; without it no update can reach the app.
+
 ## Updating the iPhone version
 
 Edit `web/`, bump `VERSION` in `web/sw.js`, push to `main`. Installed iPhones pick up the update after the app is reopened.
