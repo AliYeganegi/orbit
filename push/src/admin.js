@@ -91,6 +91,8 @@ export async function admin(req, env, url, json) {
     if (body.add) {
       const text = String(body.add.text || '').trim().slice(0, 200), tier = Number(body.add.tier);
       if (!text || !POOLS.includes(body.add.pool) || ![1, 2, 3].includes(tier)) return json({ error: 'Pick a pool, a depth and write the question' }, 400);
+      // daily questions are always about the other person, who appears in the text as {them}
+      if (!text.includes('{them}')) return json({ error: 'Ask about the other person: put {them} where their name goes' }, 400);
       b.custom.push({ id: 'c.' + body.add.pool + '.' + Date.now().toString(36), pool: body.add.pool, tier, text, added: Date.now() });
     }
     if (body.remove) b.custom = b.custom.filter(c => c.id !== body.remove);

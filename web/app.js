@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.9'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.10'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -969,13 +969,13 @@ function markRead(id) {
   clearTimeout(readTimer);
   readTimer = setTimeout(() => api('/p/' + id + '/read', { seq: last.s }).catch(() => {}), 400);
 }
-async function sendMsg(id, text) {
+async function sendMsg(id, text, reply) {
   const c = Soc.chats[id];
   if (!c || !text.trim()) return;
-  const cid = uid();
-  c.messages.push({ by: Soc.acct.handle, text: text.trim(), at: Date.now(), cid, pending: true });
+  const cid = uid(), re = reply && reply.s ? { re: reply.s, rq: { by: reply.by, text: clip(reply.text, 140) } } : {};
+  c.messages.push({ by: Soc.acct.handle, text: text.trim(), at: Date.now(), cid, pending: true, ...re });
   try {
-    const m = await api('/p/' + id + '/send', { text: text.trim(), cid });
+    const m = await api('/p/' + id + '/send', { text: text.trim(), cid, re: re.re });
     const i = c.messages.findIndex(x => x.cid === cid && !x.s);
     if (c.messages.some(x => x.s === m.s)) { if (i >= 0) c.messages.splice(i, 1); } // the live event got here first
     else if (i >= 0) c.messages.splice(i, 1, m); else c.messages.push(m);
@@ -989,7 +989,18 @@ async function sendMsg(id, text) {
 function retryMsg(id, m) {
   const c = Soc.chats[id], i = c.messages.indexOf(m);
   if (i >= 0) c.messages.splice(i, 1);
-  sendMsg(id, m.text);
+  sendMsg(id, m.text, m.re ? { s: m.re, ...m.rq } : null);
+}
+const REACTS = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
+/** Toggles your reaction on a message (tapping the same emoji again removes it). */
+async function reactMsg(id, m, emoji) {
+  const me = Soc.acct.handle, before = m.rx ? { ...m.rx } : null;
+  const next = { ...(m.rx || {}) };
+  if (next[me] === emoji) delete next[me]; else next[me] = emoji;
+  m.rx = Object.keys(next).length ? next : null;
+  Native.vibrate(10);
+  try { await api('/p/' + id + '/react', { s: m.s, emoji: next[me] || '' }); }
+  catch (e) { m.rx = before; say(netErr(e)); }
 }
 
 /* live updates while the app is open */
@@ -1029,6 +1040,12 @@ function onSocEvent(ev) {
     return;
   }
   if (ev.t === 'read') { if (p) p.theirRead = ev.upto; if (c) c.theirRead = ev.upto; return; }
+  if (ev.t === 'react') {
+    const m = c && c.messages.find(x => x.s === ev.s);
+    if (m) m.rx = ev.rx;
+    if (ev.n && !viewing) say(ev.n.title + ': ' + clip(ev.n.body.replace(/^To: /, ''), 50));
+    return;
+  }
   if (ev.t === 'gone') {
     delete Soc.chats[ev.pair];
     if (viewing) { nav.screen = 'people'; say('This connection has ended'); }
@@ -3134,7 +3151,27 @@ const PairView = {
     const toBottom = (smooth) => nextTick(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }));
     watch(() => st.value && st.value.messages.length, (n, o) => { if (tab.value === 'chat') { toBottom(!!o); markRead(id); } });
     watch(tab, t => { if (t === 'chat') { toBottom(false); markRead(id); } else window.scrollTo(0, 0); });
-    function send() { const t = draft.value; if (!t.trim()) return; draft.value = ''; sendMsg(id, t); Native.vibrate(8); if (box.value) box.value.style.height = ''; }
+    const sel = ref(null), replyTo = ref(null), flash = ref(null);
+    function send() {
+      const t = draft.value; if (!t.trim()) return;
+      draft.value = ''; sendMsg(id, t, replyTo.value); replyTo.value = null; Native.vibrate(8);
+      if (box.value) box.value.style.height = '';
+    }
+    function tapMsg(m) {
+      if (m.failed) return retryMsg(id, m);
+      if (!m.s) return;
+      sel.value = sel.value === m.s ? null : m.s;
+    }
+    function reply(m) { replyTo.value = m; sel.value = null; nextTick(() => box.value && box.value.focus()); }
+    function react(m, e) { reactMsg(id, m, e); sel.value = null; }
+    function copyMsg(m) { sel.value = null; try { navigator.clipboard.writeText(m.text).then(() => say('Copied')); } catch (e) {} }
+    function jump(s) {
+      const el = document.getElementById('msg' + s);
+      if (!el) return say('That message is further back');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      flash.value = s; setTimeout(() => { if (flash.value === s) flash.value = null; }, 1400);
+    }
+    const rxList = m => Object.entries(m.rx || {}).map(([h, e]) => ({ h, e, mine: h === meH.value }));
     function grow(e) { const el = e.target; el.style.height = ''; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; }
     const rows = computed(() => {
       const out = []; let lastDay = '';
@@ -3188,7 +3225,7 @@ const PairView = {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)">
     <header class="top sm">
@@ -3262,14 +3299,26 @@ const PairView = {
           <div v-if="!st.messages.length" class="muted" style="text-align:center;padding:40px 10px">Say hi to {{ nm }} 👋</div>
           <template v-for="r in rows" :key="r.key">
             <div v-if="r.sep" class="chat-sep">{{ r.sep }}</div>
-            <div v-else class="msg" :class="{me: r.m.by === meH, failed: r.m.failed}" @click="r.m.failed && retryMsg(id, r.m)">
+            <template v-else>
+            <div class="msg" :id="r.m.s ? 'msg' + r.m.s : null" :class="{me: r.m.by === meH, failed: r.m.failed, picked: sel === r.m.s, flash: flash === r.m.s, reacted: r.m.rx}" @click="tapMsg(r.m)">
+              <div v-if="r.m.rq" class="quote" @click.stop="jump(r.m.re)"><b>{{ r.m.rq.by === meH ? 'You' : nm }}</b><span>{{ r.m.rq.text }}</span></div>
               <div class="txt">{{ r.m.text }}</div>
               <div class="meta">{{ r.m.failed ? 'Not sent · tap to retry' : hm(r.m.at) }}
                 <template v-if="r.m.by === meH && !r.m.failed"><Ic v-if="r.m.pending" n="clock" :s="12"/><Ic v-else :n="st.theirRead >= r.m.s ? 'check-check' : 'check'" :s="13" :class="{seen: st.theirRead >= r.m.s}"/></template></div>
+              <div v-if="r.m.rx" class="rx" @click.stop="sel = r.m.s"><span v-for="x in rxList(r.m)" :key="x.h" :class="{mine: x.mine}">{{ x.e }}</span></div>
             </div>
+            <div v-if="sel === r.m.s" class="msg-tools" :class="{me: r.m.by === meH}">
+              <button v-for="e in REACTS" :key="e" class="rx-btn" :class="{on: r.m.rx && r.m.rx[meH] === e}" @click="react(r.m, e)">{{ e }}</button>
+              <span class="sep"></span>
+              <button class="tool" @click="reply(r.m)" aria-label="Reply"><Ic n="reply" :s="17"/></button>
+              <button class="tool" @click="copyMsg(r.m)" aria-label="Copy"><Ic n="copy" :s="16"/></button>
+            </div>
+            </template>
           </template>
         </div>
         <div class="composer">
+          <div v-if="replyTo" class="reply-bar"><Ic n="reply" :s="15"/><div class="grow"><b>{{ replyTo.by === meH ? 'You' : nm }}</b><span>{{ replyTo.text }}</span></div>
+            <button @click="replyTo = null" aria-label="Cancel reply"><Ic n="x" :s="16"/></button></div>
           <textarea ref="box" v-model="draft" rows="1" placeholder="Message" maxlength="2000" @input="grow" @keydown.enter.exact="!IOS && !Native.has && ($event.preventDefault(), send())"></textarea>
           <button class="send" :disabled="!draft.trim()" @pointerdown.prevent @mousedown.prevent @click="send" aria-label="Send"><Ic n="send" :s="19"/></button>
         </div>

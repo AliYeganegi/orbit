@@ -88,6 +88,8 @@ const Q = window.OrbitQuestions;
 const TYPE = Object.fromEntries(Q.TYPES.map(t => [t.id, t]));
 const POOL_NAMES = { friends: 'Friends', close: 'Best friends (extra)', couple: 'Couples (all)', dating: 'Dating (extra)', engaged: 'Engaged (extra)', married: 'Married (extra)', family: 'Family' };
 const TIERS = { 1: 'Light', 2: 'Personal', 3: 'Deep' };
+// questions are about the other person: {them} becomes their first name in the app
+const tq = t => String(t || '').replace(/\{them\}/g, '‹them›');
 
 const st = reactive({
   token: (() => { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } })(),
@@ -179,7 +181,7 @@ const App = {
     }
     async function askNow() {
       busy.value = true;
-      try { const r = await api('/pairs/' + ep.value.id + '/ask', { qid: qPick.value || null }); await openPair(ep.value); say('Today\'s question: ' + r.text); load(); }
+      try { const r = await api('/pairs/' + ep.value.id + '/ask', { qid: qPick.value || null }); await openPair(ep.value); say('Today\'s question: ' + tq(r.text)); load(); }
       catch (e) { say(e.message); } finally { busy.value = false; }
     }
     async function delPair() {
@@ -206,7 +208,7 @@ const App = {
     const usedIn = p => Q.TYPES.filter(t => t.pools.includes(p)).map(t => t.e + ' ' + t.l).join(', ');
 
     return { st, tab, q, tokenIn, signIn, signOut, load, stats, users, pairs, eu, openUser, saveUser, delUser, ep, openPair, savePair, askNow, delPair, qsFor, qPick, qSearch, qOptions, busy, todayOf,
-      pool, tier, bq, add, bankList, poolCount, bank, addQ, usedIn, TYPE, TYPES: Q.TYPES, POOL_NAMES, TIERS, ago, date, dt, nameOf, emojiOf, API };
+      pool, tier, bq, add, bankList, poolCount, bank, addQ, usedIn, tq, TYPE, TYPES: Q.TYPES, POOL_NAMES, TIERS, ago, date, dt, nameOf, emojiOf, API };
   },
   template: `
   <div class="wrap">
@@ -276,11 +278,11 @@ const App = {
           <select class="field" v-model.number="tier"><option :value="0">All depths</option><option v-for="(n, t) in TIERS" :key="t" :value="+t">{{ n }}</option></select>
           <input class="field grow" v-model="bq" placeholder="Search questions">
         </div>
-        <div class="toolbar sm muted" style="padding:8px 12px">Used by: {{ usedIn(pool) }} · hidden questions are skipped for everyone</div>
+        <div class="toolbar sm muted" style="padding:8px 12px">Used by: {{ usedIn(pool) }} · hidden questions are skipped for everyone · ‹them› is the other person's name</div>
         <div class="qlist" style="max-height:62vh;overflow-y:auto">
           <div v-for="x in bankList" :key="x.id" class="q" :class="{off: x.off}">
             <span class="badge" :class="{acc: x.custom}">{{ x.custom ? 'Custom' : TIERS[x.tier] }}</span>
-            <span class="t">{{ x.text }}</span>
+            <span class="t">{{ tq(x.text) }}</span>
             <code class="hide-sm">{{ x.id }}</code>
             <button v-if="x.custom" class="btn sm danger" @click="bank({remove: x.id}, 'Removed')">Delete</button>
             <button v-else class="btn sm" @click="bank({hide: x.id, on: !x.off}, x.off ? 'Shown again' : 'Hidden')">{{ x.off ? 'Show' : 'Hide' }}</button>
@@ -291,7 +293,7 @@ const App = {
           <b>Add a question</b>
           <select class="field" v-model="add.pool"><option v-for="(n, p) in POOL_NAMES" :key="p" :value="p">{{ n }}</option></select>
           <select class="field" v-model.number="add.tier"><option v-for="(n, t) in TIERS" :key="t" :value="+t">{{ n }}</option></select>
-          <input class="field grow" v-model="add.text" maxlength="200" placeholder="What's a small thing I do that makes your day?" @keydown.enter="add.text.trim() && addQ()">
+          <input class="field grow" v-model="add.text" maxlength="200" placeholder="Use {them} for the other person: What does {them} do that makes your day?" @keydown.enter="add.text.trim() && addQ()">
           <button class="btn primary" :disabled="!add.text.trim()" @click="addQ">Add</button>
         </div>
       </div>
@@ -314,18 +316,18 @@ const App = {
 
         <template v-if="ep.type">
           <h3>Today's question</h3>
-          <div v-if="todayOf(ep)" style="margin-bottom:8px">“{{ todayOf(ep).text }}” <span class="muted sm">· answered by {{ todayOf(ep).answered.length ? todayOf(ep).answered.map(h => nameOf(ep, h)).join(', ') : 'nobody yet' }}</span></div>
+          <div v-if="todayOf(ep)" style="margin-bottom:8px">“{{ tq(todayOf(ep).text) }}” <span class="muted sm">· answered by {{ todayOf(ep).answered.length ? todayOf(ep).answered.map(h => nameOf(ep, h)).join(', ') : 'nobody yet' }}</span></div>
           <div v-else class="muted" style="margin-bottom:8px">Not asked yet today.</div>
           <div class="row">
             <input class="field" v-model="qSearch" placeholder="Search a question to send…" style="flex:1;min-width:180px">
-            <select class="field" v-model="qPick" style="flex:2;min-width:220px"><option value="">A new random question</option><option v-for="x in qOptions" :key="x.id" :value="x.id">{{ x.text }}</option></select>
+            <select class="field" v-model="qPick" style="flex:2;min-width:220px"><option value="">A new random question</option><option v-for="x in qOptions" :key="x.id" :value="x.id">{{ tq(x.text) }}</option></select>
             <button class="btn" :disabled="busy || (todayOf(ep) && todayOf(ep).answered.length > 0)" @click="askNow">{{ todayOf(ep) ? 'Replace today\\'s' : 'Ask now' }}</button>
           </div>
           <div class="muted sm" style="margin-top:6px">Both get a notification. Today's question can only be replaced while nobody has answered it.</div>
         </template>
 
         <h3>Question history ({{ ep.days.length }})</h3>
-        <div v-if="ep.days.length" class="hist"><div v-for="d in ep.days" :key="d.day"><span class="d">{{ d.day }}</span><span class="t">{{ d.text }}</span>
+        <div v-if="ep.days.length" class="hist"><div v-for="d in ep.days" :key="d.day"><span class="d">{{ d.day }}</span><span class="t">{{ tq(d.text) }}</span>
           <span class="badge" :class="{ok: d.answered.length === 2}">{{ d.answered.length === 2 ? 'both' : d.answered.length ? nameOf(ep, d.answered[0]) : 'none' }}</span></div></div>
         <div v-else class="muted">No questions yet.</div>
         <div class="muted sm" style="margin-top:6px">Answers and messages are private to the two of them; the admin only sees who answered.</div>

@@ -86,11 +86,11 @@ const call = (path, body, token) => fetch(API + path, {
   await p.click('.tabs button:has-text("Questions")');
   await p.locator('.qlist .q').first().locator('button:has-text("Hide")').click();
   await p.waitForSelector('.qlist .q.off');
-  await p.fill('input[placeholder^="What\'s a small thing"]', 'Admin test question ' + run + '?');
+  await p.fill('input[placeholder^="Use {them}"]', 'Admin test question about {them} ' + run + '?');
   await p.click('.toolbar button:has-text("Add")');
-  await p.waitForSelector('.qlist .q:has-text("Admin test question ' + run + '")');
+  await p.waitForSelector('.qlist .q:has-text("Admin test question about ‹them› ' + run + '")');
   await shot('admin-4-questions');
-  await p.locator('.qlist .q:has-text("Admin test question ' + run + '") button:has-text("Delete")').click();
+  await p.locator('.qlist .q:has-text("Admin test question about") button:has-text("Delete")').click();
   await p.locator('.qlist .q.off button:has-text("Show")').first().click();
   await p.waitForTimeout(400);
   assert.equal(await p.locator('.qlist .q.off').count(), 0);

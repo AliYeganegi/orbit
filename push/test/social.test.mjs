@@ -87,6 +87,26 @@ try {
   await waitFor(() => live.find(x => x.ev.t === 'read' && x.ev.upto === 2), 'read receipt');
   console.log('✓ chat: live over the socket, push when the app is closed, read receipts');
 
+  // replies carry a short copy of what they answer; one reaction per person, notifying the author
+  const rep = await call('/s/p/' + pid + '/send', { body: { text: 'yes!', re: 1 }, token: ta });
+  assert.deepEqual([rep.data.re, rep.data.rq.by, rep.data.rq.text], [1, B, 'hi Ali 👋']);
+  assert.equal((await call('/s/p/' + pid + '/send', { body: { text: 'x', re: 99 }, token: ta })).data.re, undefined, 'reply to a missing message is a plain message');
+  await call('/s/p/' + pid + '/react', { body: { s: 2, emoji: '❤️' }, token: tb });
+  const rxLive = await waitFor(() => live.find(x => x.ev.t === 'react' && x.ev.by === B), 'live reaction');
+  assert.deepEqual(rxLive.ev.rx, { [B]: '❤️' }); assert.equal(rxLive.ev.n.title, 'Sara reacted ❤️');
+  const n0 = received.length;
+  await call('/s/p/' + pid + '/react', { body: { s: 1, emoji: '😂' }, token: ta });
+  const rxPush = await waitFor(() => received.slice(n0).find(m => m.title === 'Ali reacted 😂'), 'reaction push');
+  assert.equal(rxPush.body, 'To: hi Ali 👋');
+  await call('/s/p/' + pid + '/react', { body: { s: 1, emoji: '👍' }, token: ta }); // changing it replaces
+  await call('/s/p/' + pid + '/react', { body: { s: 2, emoji: '' }, token: tb });   // empty removes
+  const msgs = (await call('/s/p/' + pid + '/state', { token: ta })).data.messages;
+  assert.deepEqual(msgs.find(m => m.s === 1).rx, { [A]: '👍' });
+  assert.equal(msgs.find(m => m.s === 2).rx, undefined);
+  assert.equal((await call('/s/p/' + pid + '/react', { body: { s: 77, emoji: '❤️' }, token: ta })).status, 404);
+  assert.equal((await call('/s/p/' + pid + '/react', { body: { s: 1, emoji: '<b>' }, token: ta })).status, 400);
+  console.log('✓ replies and reactions');
+
   // relationship type: needs both people, and the first question comes right away
   await call('/s/p/' + pid + '/type', { body: { type: 'married' }, token: ta });
   await waitFor(() => received.find(m => /says you are Married/.test(m.title)), 'proposal push');
@@ -101,6 +121,10 @@ try {
   assert.equal(st.days.length, 1, 'first question asked immediately');
   const day = st.days[0];
   assert.ok(day.q.length > 5); assert.equal(day.day, st.todayKey);
+  // questions are about the other person: each sees the other's first name in place of {them}
+  const dayA = (await call('/s/p/' + pid + '/state', { token: ta })).data.days[0];
+  assert.ok(!day.q.includes('{them}') && day.q.includes('Ali') && dayA.q.includes('Sara'), 'personal question: ' + day.q);
+  assert.equal(dayA.q.replaceAll('Sara', '·'), day.q.replaceAll('Ali', '·'));
   await waitFor(() => live.find(x => x.ev.t === 'q' && x.ev.sched === false), 'question event');
   await waitFor(() => received.find(m => m.title.startsWith('💬 Today\'s question with Ali') && m.body === day.q), 'question push');
   console.log('✓ relationship type agreed by both, first question asked right away: "' + day.q + '"');

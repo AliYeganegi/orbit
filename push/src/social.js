@@ -239,10 +239,17 @@ export class Pair extends DurableObject {
   name(profiles, h) { return (profiles[h] && profiles[h].name) || '@' + h; }
 
   /** A day's question as one member may see it: the partner's answer stays hidden until you answer. */
-  view(meta, d, h) {
+  view(meta, profiles, d, h) {
     const o = this.other(meta, h), mine = d.ans[h], theirs = d.ans[o];
-    return { day: d.day, q: d.text, at: d.at, mine: mine ? mine.text : null, mineAt: mine ? mine.at : null,
+    return { day: d.day, q: this.forReader(d.text, profiles, h), at: d.at, mine: mine ? mine.text : null, mineAt: mine ? mine.at : null,
       theirs: mine && theirs ? theirs.text : null, theirsAt: mine && theirs ? theirs.at : null, theyAnswered: !!theirs };
+  }
+
+  /** Questions are about the other person: "{them}" becomes their first name for whoever reads it. */
+  forReader(text, profiles, h) {
+    const o = this.other({ members: Object.keys(profiles) }, h);
+    const nm = ((profiles[o] && profiles[o].name) || '').trim().split(/\s+/)[0] || '@' + o;
+    return String(text).replace(/\{them\}/g, nm);
   }
 
   async lastDay() {
@@ -258,7 +265,7 @@ export class Pair extends DurableObject {
     const after = await this.ctx.storage.list({ prefix: 'm:', start: 'm:' + pad((read[h] || 0) + 1), limit: 100 });
     const unread = [...after.values()].filter(m => m.by !== h).length;
     const d = await this.lastDay();
-    const today = d ? this.view(meta, d, h) : null;
+    const today = d ? this.view(meta, profiles, d, h) : null;
     return {
       id: meta.id, with: { handle: o, ...(profiles[o] || {}) }, type: meta.type, proposal: meta.proposal, time: meta.time, tz: meta.tz,
       last, unread, theirRead: read[o] || 0, today, todayKey: todayIn(meta.tz), asked: meta.n,
@@ -279,17 +286,21 @@ export class Pair extends DurableObject {
   }
 
   async days(h, before) {
-    const meta = await this.meta();
+    const { meta, profiles } = await this.all(['meta', 'profiles']);
     const opts = { prefix: 'd:', reverse: true, limit: 30 };
     if (before) opts.end = 'd:' + before;
     const l = await this.ctx.storage.list(opts);
-    return [...l.values()].map(d => this.view(meta, d, h));
+    return [...l.values()].map(d => this.view(meta, profiles, d, h));
   }
 
-  async send(h, text, cid) {
+  async send(h, text, cid, re) {
     const s = await this.all(['meta', 'profiles', 'mseq', 'read']);
     const seq = (s.mseq || 0) + 1;
     const m = { s: seq, by: h, text, at: Date.now(), cid: typeof cid === 'string' ? cid.slice(0, 40) : undefined };
+    if (Number.isInteger(re) && re > 0 && re < seq) { // a reply keeps a short copy of what it answers, so it shows without loading old messages
+      const orig = await this.ctx.storage.get('m:' + pad(re));
+      if (orig) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text, 140) }; }
+    }
     const read = s.read || {};
     read[h] = seq; // sending means you've seen everything before it
     await this.ctx.storage.put({ mseq: seq, ['m:' + pad(seq)]: m, read });
@@ -297,6 +308,22 @@ export class Pair extends DurableObject {
     await this.tell(o, { t: 'msg', pair: id, m, n: { title: this.name(s.profiles, h), body: clip(text, 160), go: 'pair:' + id, tag: 'msg:' + id } });
     await this.tell(h, { t: 'msg', pair: id, m });
     return m;
+  }
+
+  /** One reaction per person per message; an empty emoji removes yours. */
+  async react(h, seqNo, emoji) {
+    const s = await this.all(['meta', 'profiles']);
+    const key = 'm:' + pad(seqNo), m = await this.ctx.storage.get(key);
+    if (!m) return { error: 'no such message', status: 404 };
+    m.rx = m.rx || {};
+    if (emoji) m.rx[h] = emoji; else delete m.rx[h];
+    if (!Object.keys(m.rx).length) delete m.rx;
+    await this.ctx.storage.put(key, m);
+    const o = this.other(s.meta, h), id = s.meta.id;
+    const ev = { t: 'react', pair: id, s: seqNo, by: h, emoji: emoji || null, rx: m.rx || null };
+    await this.tell(o, { ...ev, n: emoji && m.by === o ? { title: this.name(s.profiles, h) + ' reacted ' + emoji, body: 'To: ' + clip(m.text, 120), go: 'pair:' + id, tag: 'msg:' + id } : null });
+    await this.tell(h, ev);
+    return { ok: true, rx: m.rx || null };
   }
 
   async markRead(h, seq) {
@@ -375,10 +402,10 @@ export class Pair extends DurableObject {
     await this.ctx.storage.put('d:' + day, d);
     const o = this.other(meta, h), both = !!d.ans[o], nm = this.name(s.profiles, h);
     await this.tell(o, { t: 'ans', pair: meta.id, day, by: h, both,
-      n: both ? { title: nm + ' answered 💌', body: 'See both answers: ' + clip(d.text, 100), go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day }
+      n: both ? { title: nm + ' answered 💌', body: 'See both answers: ' + clip(this.forReader(d.text, s.profiles, o), 100), go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day }
         : { title: nm + ' answered today\'s question', body: 'Answer it too to see what they said', go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day } });
     await this.tell(h, { t: 'ans', pair: meta.id, day, by: h, both });
-    return { ok: true, day: this.view(meta, d, h) };
+    return { ok: true, day: this.view(meta, s.profiles, d, h) };
   }
 
   /** Asks today's question unless it was already asked. `sched` marks the daily alarm (Android also arms that one locally). */
@@ -411,7 +438,7 @@ export class Pair extends DurableObject {
     for (const h of meta.members) {
       const o = this.other(meta, h);
       await this.tell(h, { t: 'q', pair: meta.id, day, sched,
-        n: { title: '💬 Today\'s question with ' + this.name(s.profiles, o), body: q.text, go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
+        n: { title: '💬 Today\'s question with ' + this.name(s.profiles, o), body: this.forReader(q.text, s.profiles, h), go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
     }
     return d;
   }
@@ -619,7 +646,12 @@ export async function social(req, env, url, json) {
     if (action === 'send') {
       const text = cleanText(body.text);
       if (!text) return json({ error: 'empty' }, 400);
-      return json(await p.send(me, text, body.cid));
+      return json(await p.send(me, text, body.cid, Number(body.re) || 0));
+    }
+    if (action === 'react') {
+      const emoji = typeof body.emoji === 'string' ? body.emoji.trim() : '';
+      if (emoji.length > 16 || /[\s<>]/.test(emoji)) return json({ error: 'bad emoji' }, 400);
+      return done(await p.react(me, Number(body.s) || 0, emoji));
     }
     if (action === 'read') return json({ seq: await p.markRead(me, Number(body.seq) || 0) });
     if (action === 'type') return done(await p.propose(me, String(body.type || '')));

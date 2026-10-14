@@ -71,7 +71,9 @@ const OUT = process.argv[4];
   await A.p.waitForSelector('.q-card.today');
   await B.p.waitForSelector('.q-card.today', { timeout: 8000 });
   const q = await A.p.textContent('.q-text');
-  assert.equal(q, await B.p.textContent('.q-text'), 'same question for both');
+  const qB = await B.p.textContent('.q-text');
+  assert.ok(q.includes('Sara') && qB.includes('Ali'), 'each is asked about the other: ' + q);
+  assert.equal(q.replaceAll('Sara', '·'), qB.replaceAll('Ali', '·'), 'same question for both');
   await A.shot('people-6-question');
   A.ok('relationship needs both, first question appears for both right away');
 
@@ -99,8 +101,21 @@ const OUT = process.argv[4];
   await B.p.click('.composer .send');
   await A.p.waitForSelector('.msg:not(.me):has-text("Hey!")', { timeout: 8000 });
   await A.p.waitForSelector('.msg.me .seen', { timeout: 8000 });
-  await A.shot('people-9-chat');
   A.ok('chat delivers live both ways, read ticks');
+
+  // reactions and replies
+  await B.p.click('.msg:has-text("Hi Sara")');
+  await B.p.click('.msg-tools .rx-btn:has-text("❤️")');
+  await A.p.waitForSelector('.msg.me .rx:has-text("❤️")', { timeout: 8000 });
+  await A.p.click('.msg:not(.me):has-text("Hey!")');
+  await A.p.click('.msg-tools button[aria-label="Reply"]');
+  await A.p.waitForSelector('.reply-bar:has-text("Hey!")');
+  await A.p.fill('.composer textarea', 'Sure 😊');
+  await A.p.click('.composer .send');
+  await B.p.waitForSelector('.msg:has-text("Sure") .quote:has-text("Hey!")', { timeout: 8000 });
+  await A.shot('people-9-chat');
+  await B.shot('people-9b-chat');
+  A.ok('react to a message, reply with a quote'); 
 
   // badges: a message to someone who isn't looking shows up on Today and on More
   await B.G(`g.nav.screen = null; g.nav.tab = 'today'`);

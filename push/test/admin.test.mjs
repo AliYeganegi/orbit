@@ -44,7 +44,7 @@ try {
   assert.deepEqual([info.type, info.time, info.tz, info.days.length], ['married', '21:15', 'Asia/Tehran', 1]);
   assert.ok(info.next > Date.now(), 'daily alarm armed');
   const st = (await call('/s/p/' + pid + '/state', { token: tb })).data;
-  assert.equal(st.type, 'married'); assert.equal(st.days[0].q, info.days[0].text);
+  assert.equal(st.type, 'married'); assert.equal(st.days[0].q, info.days[0].text.replaceAll('{them}', 'Ana'), 'Bob is asked about Ana');
   console.log('✓ admin sets type and time; first question asked');
 
   // replace today's question with a chosen one, only while unanswered
@@ -64,7 +64,8 @@ try {
 
   // question bank: add, hide, remove
   assert.equal((await A('/bank', { body: { add: { pool: 'married', tier: 5, text: 'x' } } })).status, 400);
-  const bank = (await A('/bank', { body: { add: { pool: 'married', tier: 1, text: 'What made you smile today?' + run } } })).data;
+  assert.equal((await A('/bank', { body: { add: { pool: 'married', tier: 1, text: 'What made you smile today?' } } })).status, 400, 'must be about {them}');
+  const bank = (await A('/bank', { body: { add: { pool: 'married', tier: 1, text: 'What did {them} do today that made you smile?' + run } } })).data;
   const custom = bank.custom.find(c => c.text.endsWith(run));
   assert.ok((await A('/questions/married')).data.some(q => q.id === custom.id), 'custom question available to married');
   assert.ok(!(await A('/questions/friends')).data.some(q => q.id === custom.id), 'not to other types');
