@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.14'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.15'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -1495,6 +1495,16 @@ window.orbitGo = where => {
   if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
 };
 drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
+// Android switches to newly downloaded screens by reloading: save first, then come back to the same place
+window.orbitBeforeReload = () => {
+  saveNow(); saveChatCache();
+  try { sessionStorage.setItem('orbit.resume', JSON.stringify({ tab: nav.tab, screen: nav.screen, open: Soc.open, at: Date.now() })); } catch (e) {}
+};
+try {
+  const r = JSON.parse(sessionStorage.getItem('orbit.resume'));
+  sessionStorage.removeItem('orbit.resume');
+  if (r && Date.now() - r.at < 60e3 && S.settings.onboarded) { nav.tab = r.tab || 'today'; Soc.open = r.open; nav.screen = r.screen; setTimeout(() => say('Orbit was updated ✨'), 600); }
+} catch (e) {}
 if (Soc.acct) { loadChatCache(); socNative(); refreshMe().then(socPushSync); socConnect(); }
 
 /* ================= base components ================= */
@@ -4128,8 +4138,9 @@ const SettingsView = {
       <div class="settings-group">
         <div class="list-row"><span class="bubble" style="--c:var(--c-tasks)"><Ic n="download" :s="18"/></span>
           <div class="grow"><div class="t">{{ updAvail ? 'Orbit ' + updAvail.name + ' is available' : 'Orbit is up to date' }}</div>
-            <div class="s">App {{ Upd.info.name }} · screens {{ APP_VERSION }} (build {{ Upd.info.build }}){{ Upd.info.pendingBuild ? ' · new screens next time you open Orbit' : '' }}</div></div>
+            <div class="s">App {{ Upd.info.name }} · screens {{ APP_VERSION }} (build {{ Upd.info.build }}){{ Upd.info.pendingBuild ? ' · an update is ready' : '' }}</div></div>
           <button v-if="updAvail" class="btn sm primary" :disabled="Upd.state === 'downloading'" @click="installUpdate">{{ Upd.state === 'downloading' ? 'Downloading…' : 'Install' }}</button>
+          <button v-else-if="Upd.info.pendingBuild && AN.applyUpdate" class="btn sm primary" @click="AN.applyUpdate()">Restart</button>
           <button v-else class="btn sm" @click="AN.checkUpdate(); say('Checking for updates…')">Check</button></div>
       </div>
     </template>

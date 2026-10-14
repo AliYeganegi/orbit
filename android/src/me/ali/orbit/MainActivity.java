@@ -175,6 +175,15 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Reloads the page on the newest screens; the app remembers which screen was open and returns to it. */
+    private void applyUpdate() {
+        web.evaluateJavascript("window.orbitBeforeReload && window.orbitBeforeReload()", v -> {
+            WebUpdate.switchNow();
+            loaded = false;
+            web.reload();
+        });
+    }
+
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
@@ -206,7 +215,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumed = true;
-        WebUpdate.check(this, false);
+        if (loaded && WebUpdate.ready(this)) applyUpdate(); // new screens were downloaded: switch on the way back in
+        else WebUpdate.check(this, false);
         web.onResume();
         js("window.orbitResume && window.orbitResume()");
     }
@@ -242,6 +252,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String updateInfo() {
             return WebUpdate.info(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void applyUpdate() {
+            runOnUiThread(() -> { if (WebUpdate.ready(MainActivity.this)) MainActivity.this.applyUpdate(); });
         }
 
         @JavascriptInterface

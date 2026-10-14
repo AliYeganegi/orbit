@@ -62,6 +62,18 @@ final class WebUpdate {
         return active;
     }
 
+    /** True when downloaded screens are newer than the ones this session uses; the app then reloads to switch. */
+    static synchronized boolean ready(Context c) {
+        SharedPreferences p = prefs(c);
+        return p.getInt("build", 0) > activeBuild(c) && p.getInt("minNative", 0) <= versionCode(c) && new File(p.getString("dir", ""), "index.html").isFile();
+    }
+
+    /** Switches to the newest downloaded screens (the page must be reloaded right after). */
+    static synchronized void switchNow() {
+        resolved = false;
+        active = null;
+    }
+
     static int activeBuild(Context c) {
         return active(c) != null ? prefs(c).getInt("build", 0) : bundledBuild(c);
     }
@@ -90,10 +102,10 @@ final class WebUpdate {
 
     // ---------------------------------------------------------------- checking
 
-    /** Looks for an update in the background, at most every 30 minutes unless forced. */
+    /** Looks for an update in the background whenever the app is opened (at most every 3 minutes unless forced). */
     static void check(Context c, boolean force) {
         Context app = c.getApplicationContext();
-        if (!force && System.currentTimeMillis() - prefs(app).getLong("checked", 0) < 30 * 60_000L) return;
+        if (!force && System.currentTimeMillis() - prefs(app).getLong("checked", 0) < 3 * 60_000L) return;
         new Thread(() -> {
             try { run(app); } catch (Exception ignored) { }
         }).start();
