@@ -40,7 +40,8 @@ public class MainActivity extends Activity {
 
     private static WeakReference<MainActivity> live = new WeakReference<>(null);
     private static volatile boolean resumed;
-    private static final int PICK_PHOTO = 3;
+    private static final int PICK_PHOTO = 3, PICK_FILE = 4;
+    private String fileUrl, fileToken; // where a picked file goes
 
     /** True while the app is on screen: it shows People events itself, so the background check stays quiet. */
     static boolean isOpen() { return resumed; }
@@ -187,6 +188,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
+        if (code == PICK_FILE) {
+            Uri f = result == RESULT_OK && data != null ? data.getData() : null;
+            if (f == null || fileUrl == null) js("window.orbitFile && window.orbitFile(null)");
+            else Files.upload(this, f, fileUrl, fileToken);
+            return;
+        }
         if (code != PICK_PHOTO) return;
         Uri uri = result == RESULT_OK && data != null ? data.getData() : null;
         if (uri == null) { js("window.orbitPhoto && window.orbitPhoto(null)"); return; }
@@ -247,6 +254,22 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 try { startActivityForResult(i, PICK_PHOTO); } catch (Exception e) { js("window.orbitPhoto && window.orbitPhoto(null)"); }
             });
+        }
+
+        /** Opens the system file picker; the chosen file is uploaded to `uploadUrl` natively (see Files). */
+        @JavascriptInterface
+        public void pickFile(String uploadUrl, String token) {
+            fileUrl = uploadUrl; fileToken = token;
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+            runOnUiThread(() -> {
+                try { startActivityForResult(i, PICK_FILE); } catch (Exception e) { js("window.orbitFile && window.orbitFile(null)"); }
+            });
+        }
+
+        /** Saves a chat photo or file to the phone (Pictures/Orbit or Download/Orbit). */
+        @JavascriptInterface
+        public void saveFile(String url, String token, String name, String mime) {
+            Files.save(MainActivity.this, url, token, name, mime);
         }
 
         @JavascriptInterface

@@ -5,6 +5,23 @@ const assert = require('node:assert/strict');
 const URL = process.argv[2] || 'http://127.0.0.1:8766/';
 const OUT = process.argv[3];
 
+
+// HARVEST=<file>: also log every piece of interface text on screen (for translations, see tools/i18n.py)
+const HARVEST = process.env.HARVEST;
+const harvest = async page => {
+  if (!HARVEST) return;
+  const items = await page.evaluate(() => {
+    const out = new Set(), skip = el => el && el.closest && el.closest('[translate="no"], script, style, svg');
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (n.nodeType === 3) { const t = n.data.trim(); if (t && /[A-Za-z]/.test(t) && !skip(n.parentElement)) out.add(t); }
+      else for (const a of ['placeholder', 'aria-label', 'title']) { const v = n.getAttribute(a); if (v && /[A-Za-z]/.test(v)) out.add(v.trim()); }
+    }
+    return [...out];
+  }).catch(() => []);
+  require('node:fs').appendFileSync(HARVEST, items.map(x => JSON.stringify(x)).join('\n') + '\n');
+};
+
 (async () => {
   const b = await chromium.launch({ executablePath: process.env.CHROME || '/usr/bin/google-chrome' });
   const p = await (await b.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'dark' })).newPage();
@@ -12,7 +29,7 @@ const OUT = process.argv[3];
   p.on('pageerror', e => errs.push(e.message));
   p.on('console', m => { if (m.type() === 'error' && !/favicon|Failed to load resource/.test(m.text())) errs.push(m.text().slice(0, 300)); });
   const step = async (name, fn) => {
-    await fn(); await p.waitForTimeout(350);
+    await fn(); await p.waitForTimeout(350); await harvest(p);
     const ok = await p.evaluate(() => !!document.querySelector('.view, .onb'));
     if (errs.length || !ok) throw new Error(name + ': ' + (errs.join(' | ') || 'blank screen'));
     process.stdout.write('✓ ' + name + '\n');

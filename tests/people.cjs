@@ -9,6 +9,23 @@ const API = process.argv[3] || 'http://127.0.0.1:8797';
 const OUT = process.argv[4];
 const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').tmpdir(), 'orbit-test-photo.png');
 
+
+// HARVEST=<file>: also log every piece of interface text on screen (for translations, see tools/i18n.py)
+const HARVEST = process.env.HARVEST;
+const harvest = async page => {
+  if (!HARVEST) return;
+  const items = await page.evaluate(() => {
+    const out = new Set(), skip = el => el && el.closest && el.closest('[translate="no"], script, style, svg');
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (n.nodeType === 3) { const t = n.data.trim(); if (t && /[A-Za-z]/.test(t) && !skip(n.parentElement)) out.add(t); }
+      else for (const a of ['placeholder', 'aria-label', 'title']) { const v = n.getAttribute(a); if (v && /[A-Za-z]/.test(v)) out.add(v.trim()); }
+    }
+    return [...out];
+  }).catch(() => []);
+  require('node:fs').appendFileSync(HARVEST, items.map(x => JSON.stringify(x)).join('\n') + '\n');
+};
+
 (async () => {
   const b = await chromium.launch({ executablePath: process.env.CHROME || '/usr/bin/google-chrome' });
   const run = Date.now().toString(36).slice(-4);
@@ -26,7 +43,7 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
     await p.fill('.onb input', name); await p.click('text=Get started');
     const G = fn => p.evaluate(new Function('const g = document.querySelector("#app").__vue_app__.config.globalProperties;' + fn));
     const shot = async f => { if (OUT) await p.screenshot({ path: OUT + '/' + f + '.png' }); };
-    const ok = what => { assert.deepEqual(errs, [], what); process.stdout.write('✓ ' + what + '\n'); };
+    const ok = what => { assert.deepEqual(errs, [], what); process.stdout.write('✓ ' + what + '\n'); return harvest(p); };
     const x = { p, G, shot, ok, errs };
     phones.push(x);
     return x;
@@ -140,7 +157,8 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   A.ok('replying with the keyboard open keeps the text box and the last message visible');
 
   // photos: pick, preview, caption, send; the other side loads it
-  const [chooser] = await Promise.all([A.p.waitForEvent('filechooser'), A.p.click('.composer .attach')]);
+  await A.p.click('.composer .attach');
+  const [chooser] = await Promise.all([A.p.waitForEvent('filechooser'), A.p.click('.attach-menu button:has-text("Photo")')]);
   await chooser.setFiles(PHOTO);
   await A.p.waitForSelector('.attach-bar img');
   await A.p.fill('.composer textarea', 'Sunset 🌅');
@@ -155,6 +173,19 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   await B.shot('people-12b-photo');
   A.ok('send a photo with a caption; it opens full screen');
 
+  // files: any file goes as a card with its name and size; the other phone can save it
+  await A.p.click('.composer .attach');
+  const [fc] = await Promise.all([A.p.waitForEvent('filechooser'), A.p.click('.attach-menu button:has-text("File")')]);
+  await fc.setFiles({ name: 'trip plan.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 fake trip plan '.repeat(400)) });
+  await B.p.waitForSelector('.msg .file-card:has-text("trip plan.pdf")', { timeout: 10000 });
+  assert.match(await B.p.textContent('.msg .file-card'), /KB/);
+  const [dl] = await Promise.all([B.p.waitForEvent('download'), B.p.click('.msg .file-card:has-text("trip plan.pdf")')]);
+  assert.equal(dl.suggestedFilename(), 'trip plan.pdf');
+  const saved = require('node:fs').readFileSync(await dl.path(), 'utf8');
+  assert.ok(saved.startsWith('%PDF-1.4 fake trip plan'), 'the same bytes arrive');
+  await B.shot('people-12c-file');
+  A.ok('send a file; the other phone saves it with its name');
+
   // edit and delete your own messages; the other phone updates live
   await A.p.click('.msg.me:has-text("Hi Sara")');
   await A.p.click('.msg-tools button[aria-label="Edit"]');
@@ -167,11 +198,9 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   await A.p.click('.msg.me.photo .meta');
   await A.p.click('.msg-tools button[aria-label="Delete"]');
   await A.p.click('.sheet button:has-text("Delete")');
-  await B.p.waitForSelector('.msg.deleted:has-text("Message deleted")', { timeout: 8000 });
-  assert.equal(await B.p.locator('.msg.photo').count(), 0, 'the photo is gone on both phones');
-  assert.equal(await B.p.locator('.msg:not(.me).deleted').count(), 1);
-  await B.p.click('.msg.deleted');
-  assert.equal(await B.p.locator('.msg-tools').count(), 0, 'no menu on a deleted message');
+  await B.p.waitForFunction(() => !document.querySelector('.msg.photo .pic'), null, { timeout: 8000 });
+  assert.equal(await B.p.locator('text=Message deleted').count(), 0, 'no trace left on the other phone');
+  assert.equal(await A.p.locator('.msg.photo .pic').count(), 0, 'gone on the sender\'s phone too');
   await A.shot('people-13-edit-delete');
   A.ok('edit and delete own messages, live on the other phone');
 
@@ -224,7 +253,12 @@ const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').
   const C = await phone('Mina');
   await C.G(`g.go('cycle')`); await C.p.waitForTimeout(300);
   await C.p.click('.seg button:has-text("Next period")');
-  await C.G(`document.querySelector('input[type=date][min]').value = g.addDays(g.R.today, 10); document.querySelector('input[type=date][min]').dispatchEvent(new Event('input'))`);
+  const in10 = await C.G(`return g.addDays(g.R.today, 10)`);
+  await C.p.click('.date-field');
+  await C.p.waitForSelector('.picker .dp-cal');
+  if (!(await C.p.locator('.dp-cal button[data-k="' + in10 + '"]:not(.out)').count())) await C.p.click('.picker button[aria-label="Next month"]');
+  await C.p.click('.dp-cal button[data-k="' + in10 + '"]:not(.out)');
+  await C.p.click('.picker button:has-text("Done")');
   await C.p.click('text=Start tracking');
   await C.p.waitForSelector('.cyc-hero');
   const msg = await C.p.textContent('.cyc-hero .msg');

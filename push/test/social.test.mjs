@@ -142,7 +142,7 @@ try {
   assert.equal((await call('/s/p/' + pid + '/delete', { body: { s: pm.data.s }, token: ta })).status, 200);
   await waitFor(() => live.find(x => x.ev.t === 'del' && x.ev.s === pm.data.s), 'live delete');
   const after = (await call('/s/p/' + pid + '/state', { token: tb })).data.messages.find(m => m.s === pm.data.s);
-  assert.ok(after.deleted && after.text === undefined && after.media === undefined, 'nothing of it is left');
+  assert.equal(after, undefined, 'a deleted message leaves no trace in the chat');
   assert.equal((await fetch(W + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + tb } })).status, 404, 'its photo is erased');
   assert.equal((await call('/s/p/' + pid + '/edit', { body: { s: pm.data.s, text: 'back' }, token: ta })).status, 404, 'deleted stays deleted');
   assert.equal((await call('/s/p/' + pid + '/react', { body: { s: pm.data.s, emoji: '❤️' }, token: tb })).status, 404);

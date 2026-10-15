@@ -905,3 +905,56 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
   border: 1px solid var(--line-2); box-shadow: var(--shadow); }
 .kb .jump-latest { bottom: calc(var(--composer-h, 62px) + var(--kbb, 0px) + 18px); }
 .jump-latest .badge { position: absolute; top: -6px; right: -4px; height: 20px; min-width: 20px; font-size: 11px; padding: 0 5px; }
+
+/* date & time picker */
+.picker .tp-big { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 0 0 14px; }
+.picker .tp-big b { font-size: 46px; font-weight: 750; letter-spacing: -.03em; font-variant-numeric: tabular-nums; min-width: 150px; text-align: center; }
+.picker .tp-big button { width: 42px; height: 42px; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; }
+.tp-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.tp-grid button { height: 40px; border-radius: 12px; background: var(--surface-2); font-weight: 650; font-variant-numeric: tabular-nums; font-size: 14.5px; }
+.tp-grid button.on { background: var(--acc, var(--c-tasks)); color: #fff; }
+.tp-grid button.near { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--acc, var(--c-tasks)) 50%, transparent); }
+.dp-cal button.sel { background: var(--acc, var(--c-tasks)); color: #fff; }
+.dp-cal button.sel small { color: rgba(255, 255, 255, .8); }
+.dp-cal button.td:not(.sel) { border-color: color-mix(in srgb, var(--acc, var(--c-tasks)) 60%, transparent); }
+.dp-cal button.off { opacity: .22; }
+.date-field { text-align: left; width: 100%; }
+
+.rem.past { opacity: .62; }
+.rem.past .n { color: var(--muted); font-style: italic; }
+.meta .passed { color: #e5873a; font-weight: 650; }
+
+/* Today: coming up & recently */
+.agenda-row { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.agenda-row:last-child { border-bottom: 0; }
+.agenda-row .grow { flex: 1; min-width: 0; }
+.agenda-row .t { font-weight: 620; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agenda-row .s { font-size: 12.5px; color: var(--muted); }
+.agenda-row .when { font-size: 13px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agenda-row .when.now { color: var(--c-people); }
+.recent-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 14px; }
+.recent-row .e { width: 24px; text-align: center; }
+.recent-row .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent-row .muted { font-size: 12px; white-space: nowrap; }
+
+.h-day.rest i { opacity: .35; border-style: dashed; }
+.h-day.rest small { opacity: .5; }
+
+/* money: your own categories */
+.cat-grid .cat-new { border: 1.5px dashed var(--line-2); color: var(--muted); }
+.cat-maker { margin-top: 10px; background: var(--surface-2); border: 0; }
+.cat-maker .cat-e { width: 50px; height: 50px; border-radius: 14px; background: var(--surface); display: grid; place-items: center; font-size: 28px; flex-shrink: 0; }
+.cat-maker .grow { flex: 1; min-width: 0; }
+.emoji-grid.sm button { font-size: 20px; }
+
+/* chat: files and saving */
+.file-card { display: flex; align-items: center; gap: 10px; width: min(250px, 64vw); padding: 8px 10px; margin-bottom: 4px; border-radius: 14px; background: rgba(127, 127, 127, .14); text-align: left; color: inherit; }
+.file-card .fi { font-size: 26px; }
+.file-card .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.file-card b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-card small { font-size: 12px; opacity: .75; }
+.msg.photo .file-card, .msg .file-card + .txt { margin-top: 2px; }
+.viewer .save { position: absolute; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); height: 44px; padding: 0 18px; border-radius: 22px; background: rgba(255, 255, 255, .16); color: #fff; display: flex; align-items: center; gap: 8px; font-weight: 650; }
+.attach-menu { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.attach-menu button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 10px; border-radius: 18px; background: var(--surface-2); }
+.attach-menu small { color: var(--muted); font-size: 12px; }

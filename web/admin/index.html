@@ -67,7 +67,8 @@ tr.click:hover td { background: color-mix(in srgb, var(--acc) 5%, transparent); 
 .qlist div.q { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); }
 .qlist div.q:last-child { border-bottom: 0; }
 .qlist .q.off .t { text-decoration: line-through; color: var(--muted); }
-.qlist .t { flex: 1; }
+.qlist .t { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.qlist .t .fa { font-size: 13.5px; color: var(--muted); text-align: right; font-family: system-ui, sans-serif; }
 .qlist code { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .login { max-width: 380px; margin: 12vh auto 0; text-align: center; }
 .login .field { width: 100%; margin: 14px 0 10px; }
@@ -122,6 +123,7 @@ const ago = ms => {
   if (s < 86400 * 30) return Math.round(s / 86400) + ' d ago';
   return new Date(ms).toLocaleDateString();
 };
+const mb = n => (!n ? '—' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB');
 const date = ms => (ms ? new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
 const dt = ms => (ms ? new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
 const nameOf = (p, h) => (p && p.profiles && p.profiles[h] && p.profiles[h].name) || '@' + h;
@@ -142,7 +144,8 @@ const App = {
         { l: 'Users', v: d.users.length, s: d.users.filter(u => u.seen > day).length + ' active in 24 h' },
         { l: 'Relations', v: d.pairs.length, s: byType.map(t => t.e + ' ' + t.n).join('  ') || 'none typed yet' },
         { l: 'Questions asked', v: asked, s: both + ' answered by both' + (asked ? ' (' + Math.round(both / asked * 100) + '%)' : '') },
-        { l: 'Messages', v: d.pairs.reduce((n, p) => n + (p.messages || 0), 0), s: 'texts stay private' },
+        { l: 'Messages', v: d.pairs.reduce((n, p) => n + (p.messages || 0), 0), s: 'texts stay private · ' + mb(d.pairs.reduce((n, p) => n + (p.media || 0), 0)) + ' of media' },
+        { l: 'Languages', v: d.users.filter(u => u.lang === 'fa').length + ' فارسی', s: d.users.filter(u => u.lang !== 'fa').length + ' English' },
       ];
     });
     const match = (...xs) => !q.value.trim() || xs.join(' ').toLowerCase().includes(q.value.trim().toLowerCase().replace(/^@/, ''));
@@ -195,20 +198,20 @@ const App = {
     const todayOf = p => p.days && p.days[0] && p.days[0].day === p.today ? p.days[0] : null;
 
     // question bank
-    const pool = ref('couple'), tier = ref(0), bq = ref(''), add = reactive({ pool: 'couple', tier: 1, text: '' });
+    const pool = ref('couple'), tier = ref(0), bq = ref(''), add = reactive({ pool: 'couple', tier: 1, text: '', fa: '' });
     const bankList = computed(() => {
       const off = new Set(st.bank.disabled), s = bq.value.trim().toLowerCase();
-      const built = [1, 2, 3].flatMap(t => (Q.POOLS[pool.value][t] || []).map((text, i) => ({ id: pool.value + '.' + t + '.' + i, tier: t, text })));
+      const built = [1, 2, 3].flatMap(t => (Q.POOLS[pool.value][t] || []).map((text, i) => ({ id: pool.value + '.' + t + '.' + i, tier: t, text, fa: (((Q.POOLS_FA || {})[pool.value] || {})[t] || [])[i] || '' })));
       const custom = st.bank.custom.filter(c => c.pool === pool.value).map(c => ({ ...c, custom: true }));
-      return custom.concat(built).filter(x => (!tier.value || x.tier === tier.value) && (!s || x.text.toLowerCase().includes(s))).map(x => ({ ...x, off: off.has(x.id) }));
+      return custom.concat(built).filter(x => (!tier.value || x.tier === tier.value) && (!s || x.text.toLowerCase().includes(s) || (x.fa || '').includes(bq.value.trim()))).map(x => ({ ...x, off: off.has(x.id) }));
     });
     const poolCount = p => [1, 2, 3].reduce((n, t) => n + (Q.POOLS[p][t] || []).length, 0) + st.bank.custom.filter(c => c.pool === p).length;
     async function bank(body, msg) { try { st.bank = await api('/bank', body); if (msg) say(msg); } catch (e) { say(e.message); } }
-    async function addQ() { await bank({ add: { ...add } }, 'Question added'); add.text = ''; }
+    async function addQ() { await bank({ add: { ...add } }, 'Question added'); add.text = ''; add.fa = ''; }
     const usedIn = p => Q.TYPES.filter(t => t.pools.includes(p)).map(t => t.e + ' ' + t.l).join(', ');
 
     return { st, tab, q, tokenIn, signIn, signOut, load, stats, users, pairs, eu, openUser, saveUser, delUser, ep, openPair, savePair, askNow, delPair, qsFor, qPick, qSearch, qOptions, busy, todayOf,
-      pool, tier, bq, add, bankList, poolCount, bank, addQ, usedIn, tq, TYPE, TYPES: Q.TYPES, POOL_NAMES, TIERS, ago, date, dt, nameOf, emojiOf, API };
+      pool, tier, bq, add, bankList, poolCount, bank, addQ, usedIn, tq, TYPE, TYPES: Q.TYPES, POOL_NAMES, TIERS, ago, date, dt, mb, nameOf, emojiOf, API };
   },
   template: `
   <div class="wrap">
@@ -240,7 +243,7 @@ const App = {
 
       <div v-if="tab === 'pairs' && st.data" class="card scroll">
         <table>
-          <thead><tr><th>People</th><th>Relationship</th><th class="hide-sm">Question time</th><th>Questions</th><th class="hide-sm">Messages</th><th class="hide-sm">Since</th></tr></thead>
+          <thead><tr><th>People</th><th>Relationship</th><th class="hide-sm">Question time</th><th>Questions</th><th class="hide-sm">Messages</th><th class="hide-sm">Photos & files</th><th class="hide-sm">Since</th></tr></thead>
           <tbody>
             <tr v-for="p in pairs" :key="p.id" class="click" @click="openPair(p)">
               <td><div class="who" v-for="h in p.members" :key="h" style="margin:2px 0"><span class="av" style="width:26px;height:26px;font-size:14px">{{ emojiOf(p, h) }}</span><span>{{ nameOf(p, h) }} <span class="muted sm">@{{ h }}</span></span></div></td>
@@ -249,6 +252,7 @@ const App = {
               <td class="hide-sm">{{ p.time }} <span class="muted sm">{{ p.tz }}</span></td>
               <td>{{ p.questions }} <span class="muted sm">· {{ p.both }} both</span><div v-if="p.lastDay" class="muted sm">last {{ p.lastDay }}</div></td>
               <td class="hide-sm">{{ p.messages }}</td>
+              <td class="hide-sm">{{ mb(p.media) }}</td>
               <td class="hide-sm muted">{{ date(p.created) }}</td>
             </tr>
           </tbody>
@@ -258,10 +262,11 @@ const App = {
 
       <div v-if="tab === 'users' && st.data" class="card scroll">
         <table>
-          <thead><tr><th>User</th><th>Connections</th><th>Last seen</th><th class="hide-sm">Joined</th><th></th></tr></thead>
+          <thead><tr><th>User</th><th>Language</th><th>Connections</th><th>Last seen</th><th class="hide-sm">Joined</th><th></th></tr></thead>
           <tbody>
             <tr v-for="u in users" :key="u.handle" class="click" @click="openUser(u)">
               <td><div class="who"><span class="av">{{ u.emoji }}</span><div>{{ u.name }}<div class="muted sm">@{{ u.handle }}</div></div></div></td>
+              <td><span class="badge" :class="{acc: u.lang === 'fa'}">{{ u.lang === 'fa' ? 'فارسی' : 'English' }}</span></td>
               <td>{{ u.connections }}</td>
               <td>{{ ago(u.seen) }}</td>
               <td class="hide-sm muted">{{ date(u.created) }}</td>
@@ -282,7 +287,7 @@ const App = {
         <div class="qlist" style="max-height:62vh;overflow-y:auto">
           <div v-for="x in bankList" :key="x.id" class="q" :class="{off: x.off}">
             <span class="badge" :class="{acc: x.custom}">{{ x.custom ? 'Custom' : TIERS[x.tier] }}</span>
-            <span class="t">{{ tq(x.text) }}</span>
+            <span class="t">{{ tq(x.text) }}<span v-if="x.fa" class="fa" dir="rtl">{{ tq(x.fa) }}</span><span v-else-if="x.custom" class="fa muted">No Persian version: Farsi users see the English</span></span>
             <code class="hide-sm">{{ x.id }}</code>
             <button v-if="x.custom" class="btn sm danger" @click="bank({remove: x.id}, 'Removed')">Delete</button>
             <button v-else class="btn sm" @click="bank({hide: x.id, on: !x.off}, x.off ? 'Shown again' : 'Hidden')">{{ x.off ? 'Show' : 'Hide' }}</button>
@@ -294,6 +299,7 @@ const App = {
           <select class="field" v-model="add.pool"><option v-for="(n, p) in POOL_NAMES" :key="p" :value="p">{{ n }}</option></select>
           <select class="field" v-model.number="add.tier"><option v-for="(n, t) in TIERS" :key="t" :value="+t">{{ n }}</option></select>
           <input class="field grow" v-model="add.text" maxlength="200" placeholder="Use {them} for the other person: What does {them} do that makes your day?" @keydown.enter="add.text.trim() && addQ()">
+          <input class="field grow" v-model="add.fa" maxlength="200" dir="rtl" placeholder="فارسی (اختیاری) — مثلاً: {them} چه کاری می‌کنه که روزت رو می‌سازه؟">
           <button class="btn primary" :disabled="!add.text.trim()" @click="addQ">Add</button>
         </div>
       </div>
@@ -302,7 +308,7 @@ const App = {
     <div v-if="ep" class="modal-bg" @click.self="ep = null">
       <div class="modal">
         <h2><span v-for="h in ep.members" :key="h" class="av">{{ emojiOf(ep, h) }}</span>{{ ep.members.map(h => nameOf(ep, h)).join(' & ') }}</h2>
-        <div class="muted sm">{{ ep.members.map(h => '@' + h).join(' · ') }} · connected {{ date(ep.created) }} · {{ ep.messages }} messages · next question {{ dt(ep.next) }}</div>
+        <div class="muted sm">{{ ep.members.map(h => '@' + h).join(' · ') }} · connected {{ date(ep.created) }} · {{ ep.messages }} messages · {{ mb(ep.media) }} of photos & files · next question {{ dt(ep.next) }}</div>
         <div v-if="ep.proposal" class="sm" style="margin-top:8px"><span class="badge warn">@{{ ep.proposal.by }} proposed {{ TYPE[ep.proposal.type].l }}, waiting for the other</span></div>
 
         <h3>Settings</h3>

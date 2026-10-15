@@ -1,24 +1,25 @@
 {
- "build": 7,
- "version": "1.15",
+ "build": 9,
+ "version": "1.16",
  "minNative": 21,
  "files": {
-  "app.css": "afb299f11a9f5de5a77ba860c2a1d30fe167ed216f17937f085699dd2e926860",
-  "app.js": "eb409de8928402e16b24e9b3ea3733a2d6df18b2b18bcd97cf699b0a2e5a2c9f",
-  "icons.js": "eb2bed4cb78f547951e2f9f0c4cde273ec49350e433bfb67fc4c5929a96523da",
-  "index.html": "7b1867f0b677d7de0c628ed3ecb1752eae3f91e5c900776adc2718cc76a434d7",
+  "app.css": "65e0ba4777d3dc848cf272ae899178d21ba738eeef9b1c06341fbccf9c23fbf5",
+  "app.js": "26610e89b765babc43643b12b7d4e3a278ae1cb7698aaddf1874689ebe5ea800",
+  "i18n.js": "ba5e39bdaf652eb6e27245f4d959d8988d3216e4382e02ad6cbe98064985cd8a",
+  "icons.js": "eae340bd6b52918a078666e1958740d68b7b81ca97d6c345911640e7defce281",
+  "index.html": "796f337759fbc239b3f5e30aac232403e28aa96b24a667211fa162b5aae90791",
   "inter.woff2": "f052ee44c3728dfd23aba8a4567150bc314d23903026fbb6ad089422c2df56af",
-  "questions.js": "9d1e87666f872f8122fe16b1fab5b6c038881f11bd5527adb308f2be879d259c",
+  "questions.js": "b9ef94f5e75142adbc899263cd55f4758a4ea9ef667b74b1bb856f87b28e110c",
   "schedule.js": "6eceb7b8816b3be2da0ebaa0660b16f303e3fd92ed9d22ab2dd5f70862b08641",
   "sms.js": "de394e2357f425f03eb85f9716c71ec4f624e38f047ec63170ae5c22a9d5d7eb",
-  "tips.js": "7c28b7bcde9f8e8df727bf2b418507c5804be341b648890e07c80cc42642f253",
+  "tips.js": "d79f60b7f454a924082ba60668c58d6fbc861c3a1f8b1b4a84f3e5c00c0f4513",
   "vue.js": "c459ba7cc8db65c982589fa5d64c7ff478877e8e5b0fd75683207cec6a4e89e8"
  },
  "native": {
-  "code": 23,
-  "name": "1.15",
-  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.15/Orbit-1.15.apk",
-  "sha256": "4d02ba7aa817bc4dbea68647f33d05507f8d6804c53dfffedf1078103c357086",
-  "size": 275950
+  "code": 24,
+  "name": "1.16",
+  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.16/Orbit-1.16.apk",
+  "sha256": "e51d192b8a6b22a34f4c40e1f6d09324414416958050a012b0d1c760fb3dbe20",
+  "size": 333358
  }
 }

@@ -23,6 +23,10 @@ const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 const DEFAULT_TIME = '20:00';
 const MAX_PHOTO = 1_800_000;          // per photo (the app sends ~200–500 KB after resizing on the phone)
 const MAX_PAIR_MEDIA = 400_000_000;   // per conversation
+const MAX_FILE = 15_000_000;          // any other file
+const CHUNK = 1_500_000;              // files are stored in pieces (one storage value holds at most 2 MB)
+const cleanName = n => String(n || 'file').replace(/[\u0000-\u001f\/\\<>:"|?*]+/g, '_').trim().slice(0, 120) || 'file';
+const cleanMime = t => (/^[a-z]+\/[a-z0-9.+-]{1,80}$/i.test(String(t || '')) ? String(t).toLowerCase() : 'application/octet-stream');
 
 /** The image type from the file's first bytes, so nothing but real images is stored or served. */
 function imageType(b) {
@@ -49,8 +53,10 @@ async function sha256(text) {
 function cleanProfile(b) {
   const name = cleanText(b.name, 40);
   const emoji = cleanText(b.emoji, 16) || '🙂';
-  return { name, emoji };
+  return { name, emoji, lang: b.lang === 'fa' ? 'fa' : 'en' };
 }
+/** Notification text in the reader's language. */
+const L = (lang, en, fa) => (lang === 'fa' ? fa : en);
 
 const label = p => p.name || '@' + p.handle;
 export const user = (env, h) => env.USER.get(env.USER.idFromName(h));
@@ -68,8 +74,9 @@ export { typeOf, cleanProfile, sha256, todayIn };
 export class Registry extends DurableObject {
   async touchUser(h, p, pids) {
     const cur = await this.ctx.storage.get('u:' + h), now = Date.now();
-    const changed = !cur || cur.name !== p.name || cur.emoji !== p.emoji || now - (cur.seen || 0) > 10 * 60e3;
-    if (changed) await this.ctx.storage.put('u:' + h, { ...(cur || { created: now }), handle: h, name: p.name, emoji: p.emoji, seen: now });
+    const lang = p.lang || (cur && cur.lang) || 'en';
+    const changed = !cur || cur.name !== p.name || cur.emoji !== p.emoji || cur.lang !== lang || now - (cur.seen || 0) > 10 * 60e3;
+    if (changed) await this.ctx.storage.put('u:' + h, { ...(cur || { created: now }), handle: h, name: p.name, emoji: p.emoji, lang, seen: now });
     for (const id of pids || []) if (!(await this.ctx.storage.get('p:' + id))) await this.ctx.storage.put('p:' + id, { id, members: id.split('~'), created: now });
   }
 
@@ -94,7 +101,7 @@ export function questionsFor(type, bank) {
   const t = typeOf(type);
   if (!t) return [];
   const off = new Set(bank.disabled || []);
-  const custom = (bank.custom || []).filter(c => t.pools.includes(c.pool)).map(c => ({ id: c.id, tier: c.tier, text: c.text }));
+  const custom = (bank.custom || []).filter(c => t.pools.includes(c.pool)).map(c => ({ id: c.id, tier: c.tier, text: c.text, fa: c.fa || null }));
   return Q.forType(type).concat(custom).filter(q => !off.has(q.id));
 }
 
@@ -122,7 +129,7 @@ export class User extends DurableObject {
 
   async profile() {
     const p = await this.ctx.storage.get('profile');
-    return p ? { handle: p.handle, name: p.name, emoji: p.emoji } : null;
+    return p ? { handle: p.handle, name: p.name, emoji: p.emoji, lang: p.lang || 'en' } : null;
   }
 
   async me() {
@@ -134,8 +141,8 @@ export class User extends DurableObject {
   async update(b) {
     const s = await this.all(['profile', 'conns']);
     const patch = {};
-    if (b.name !== undefined || b.emoji !== undefined) {
-      const p = cleanProfile({ name: b.name ?? s.profile.name, emoji: b.emoji ?? s.profile.emoji });
+    if (b.name !== undefined || b.emoji !== undefined || b.lang !== undefined) {
+      const p = cleanProfile({ name: b.name ?? s.profile.name, emoji: b.emoji ?? s.profile.emoji, lang: b.lang ?? s.profile.lang });
       patch.profile = { ...s.profile, ...p };
     }
     if (b.tz !== undefined && validTz(b.tz)) patch.tz = b.tz;
@@ -236,7 +243,7 @@ export class Pair extends DurableObject {
     if (await this.ctx.storage.get('meta')) return;
     await this.ctx.storage.put({
       meta: { id, members: [a.handle, b.handle], type: null, proposal: null, time: DEFAULT_TIME, tz: validTz(tz) ? tz : 'UTC', n: 0, created: Date.now() },
-      profiles: { [a.handle]: { name: a.name, emoji: a.emoji }, [b.handle]: { name: b.name, emoji: b.emoji } },
+      profiles: { [a.handle]: { name: a.name, emoji: a.emoji, lang: a.lang || 'en' }, [b.handle]: { name: b.name, emoji: b.emoji, lang: b.lang || 'en' } },
       mseq: 0, read: {}, asked: [],
     });
     await registry(this.env).putPair(id, { members: [a.handle, b.handle], type: null, created: Date.now() });
@@ -253,12 +260,13 @@ export class Pair extends DurableObject {
   /** A day's question as one member may see it: the partner's answer stays hidden until you answer. */
   view(meta, profiles, d, h) {
     const o = this.other(meta, h), mine = d.ans[h], theirs = d.ans[o];
-    return { day: d.day, q: this.forReader(d.text, profiles, h), at: d.at, mine: mine ? mine.text : null, mineAt: mine ? mine.at : null,
+    return { day: d.day, qid: d.id, qfa: d.fa || null, q: this.forReader(d.text, profiles, h, d.id, d.fa), at: d.at, mine: mine ? mine.text : null, mineAt: mine ? mine.at : null,
       theirs: mine && theirs ? theirs.text : null, theirsAt: mine && theirs ? theirs.at : null, theyAnswered: !!theirs };
   }
 
   /** Questions are about the other person: "{them}" becomes their first name for whoever reads it. */
-  forReader(text, profiles, h) {
+  forReader(text, profiles, h, qid, fa) {
+    if (profiles[h] && profiles[h].lang === 'fa' && (fa || (qid && Q.faById(qid)))) text = fa || Q.faById(qid); // their language
     const o = this.other({ members: Object.keys(profiles) }, h);
     const nm = ((profiles[o] && profiles[o].name) || '').trim().split(/\s+/)[0] || '@' + o;
     return String(text).replace(/\{them\}/g, nm);
@@ -272,10 +280,10 @@ export class Pair extends DurableObject {
   async summary(h) {
     const s = await this.all(['meta', 'profiles', 'read']);
     const { meta, profiles } = s, read = s.read || {}, o = this.other(meta, h);
-    const lastL = await this.ctx.storage.list({ prefix: 'm:', reverse: true, limit: 1 });
-    const last = [...lastL.values()][0] || null;
+    const lastL = await this.ctx.storage.list({ prefix: 'm:', reverse: true, limit: 30 });
+    const last = [...lastL.values()].find(m => !m.deleted) || null;
     const after = await this.ctx.storage.list({ prefix: 'm:', start: 'm:' + pad((read[h] || 0) + 1), limit: 100 });
-    const unread = [...after.values()].filter(m => m.by !== h).length;
+    const unread = [...after.values()].filter(m => m.by !== h && !m.deleted).length;
     const d = await this.lastDay();
     const today = d ? this.view(meta, profiles, d, h) : null;
     return {
@@ -287,14 +295,14 @@ export class Pair extends DurableObject {
   async state(h) {
     const sum = await this.summary(h);
     const msgs = await this.ctx.storage.list({ prefix: 'm:', reverse: true, limit: 60 });
-    return { ...sum, messages: [...msgs.values()].reverse(), days: await this.days(h) };
+    return { ...sum, messages: [...msgs.values()].filter(m => !m.deleted).reverse(), days: await this.days(h) };
   }
 
   async messages(h, before) {
     const opts = { prefix: 'm:', reverse: true, limit: 60 };
     if (before) opts.end = 'm:' + pad(before);
     const msgs = await this.ctx.storage.list(opts);
-    return [...msgs.values()].reverse();
+    return [...msgs.values()].filter(m => !m.deleted).reverse();
   }
 
   async days(h, before) {
@@ -306,17 +314,36 @@ export class Pair extends DurableObject {
   }
 
   /** Stores a photo for a message about to be sent; only the two members can load it back. */
-  async upload(h, bytes, type) {
+  /** Stores a photo or file for a message about to be sent; only the two members can load it back. */
+  async upload(h, bytes, type, name) {
     const used = (await this.ctx.storage.get('fbytes')) || 0;
-    if (used + bytes.byteLength > MAX_PAIR_MEDIA) return { error: 'This chat has no room for more photos', status: 413 };
+    if (used + bytes.byteLength > MAX_PAIR_MEDIA) return { error: 'This chat has no room for more files', status: 413 };
     const fid = b64u.encode(crypto.getRandomValues(new Uint8Array(15)));
-    await this.ctx.storage.put({ ['f:' + fid]: { by: h, type, size: bytes.byteLength, at: Date.now(), data: bytes }, fbytes: used + bytes.byteLength });
-    return { fid };
+    if (!name) { // a photo: one piece
+      await this.ctx.storage.put({ ['f:' + fid]: { by: h, type, size: bytes.byteLength, at: Date.now(), data: bytes }, fbytes: used + bytes.byteLength });
+      return { fid };
+    }
+    const chunks = Math.ceil(bytes.byteLength / CHUNK) || 1;
+    for (let i = 0; i < chunks; i++) await this.ctx.storage.put('fc:' + fid + ':' + i, bytes.slice(i * CHUNK, (i + 1) * CHUNK));
+    await this.ctx.storage.put({ ['f:' + fid]: { by: h, kind: 'file', type, name, size: bytes.byteLength, chunks, at: Date.now() }, fbytes: used + bytes.byteLength });
+    return { fid, name, size: bytes.byteLength, type };
   }
 
   async file(fid) {
     const f = await this.ctx.storage.get('f:' + fid);
-    return f ? { type: f.type, data: f.data } : null;
+    if (!f) return null;
+    if (f.kind !== 'file') return { type: f.type, data: f.data };
+    const out = new Uint8Array(f.size);
+    for (let i = 0, o = 0; i < f.chunks; i++) { const c = new Uint8Array(await this.ctx.storage.get('fc:' + fid + ':' + i)); out.set(c, o); o += c.byteLength; }
+    return { type: f.type, name: f.name, data: out.buffer, file: true };
+  }
+
+  async dropFile(fid) {
+    const f = await this.ctx.storage.get('f:' + fid);
+    if (!f) return;
+    if (f.kind === 'file') for (let i = 0; i < f.chunks; i++) await this.ctx.storage.delete('fc:' + fid + ':' + i);
+    await this.ctx.storage.delete('f:' + fid);
+    await this.ctx.storage.put('fbytes', Math.max(0, ((await this.ctx.storage.get('fbytes')) || 0) - f.size));
   }
 
   async send(h, text, cid, re, media) {
@@ -324,8 +351,9 @@ export class Pair extends DurableObject {
     let photo = null;
     if (media && typeof media.fid === 'string') {
       const f = await this.ctx.storage.get('f:' + media.fid);
-      if (!f || f.by !== h) return { error: 'photo not found', status: 404 };
-      photo = { fid: media.fid, width: Math.round(Number(media.width)) || 0, height: Math.round(Number(media.height)) || 0 };
+      if (!f || f.by !== h) return { error: 'file not found', status: 404 };
+      photo = f.kind === 'file' ? { fid: media.fid, kind: 'file', name: f.name, size: f.size, type: f.type }
+        : { fid: media.fid, width: Math.round(Number(media.width)) || 0, height: Math.round(Number(media.height)) || 0 };
     }
     if (!text && !photo) return { error: 'empty' };
     const seq = (s.mseq || 0) + 1;
@@ -333,13 +361,19 @@ export class Pair extends DurableObject {
     if (photo) m.media = photo;
     if (Number.isInteger(re) && re > 0 && re < seq) { // a reply keeps a short copy of what it answers, so it shows without loading old messages
       const orig = await this.ctx.storage.get('m:' + pad(re));
-      if (orig && !orig.deleted) { m.re = re; m.rq = { by: orig.by, text: clip(orig.text || '📷 Photo', 140) }; if (orig.media) m.rq.photo = true; }
+      if (orig && !orig.deleted) {
+        const what = orig.media ? (orig.media.kind === 'file' ? '📎 ' + orig.media.name : '📷 Photo') : '';
+        m.re = re; m.rq = { by: orig.by, text: clip(orig.text || what, 140) };
+        if (orig.media) m.rq[orig.media.kind === 'file' ? 'file' : 'photo'] = true;
+      }
     }
     const read = s.read || {};
     read[h] = seq; // sending means you've seen everything before it
     await this.ctx.storage.put({ mseq: seq, ['m:' + pad(seq)]: m, read });
     const id = s.meta.id, o = this.other(s.meta, h);
-    const preview = photo ? '📷 Photo' + (text ? ': ' + text : '') : text;
+    const lo = (s.profiles[this.other(s.meta, h)] || {}).lang;
+    const label = photo ? (photo.kind === 'file' ? '📎 ' + photo.name : L(lo, '📷 Photo', '📷 عکس')) : '';
+    const preview = photo ? label + (text ? ': ' + text : '') : text;
     await this.tell(o, { t: 'msg', pair: id, m, n: { title: this.name(s.profiles, h), body: clip(preview, 160), go: 'pair:' + id, tag: 'msg:' + id } });
     await this.tell(h, { t: 'msg', pair: id, m });
     return m;
@@ -362,13 +396,7 @@ export class Pair extends DurableObject {
     const meta = await this.meta(), key = 'm:' + pad(seqNo), m = await this.ctx.storage.get(key);
     if (!m || m.deleted) return { error: 'no such message', status: 404 };
     if (m.by !== h) return { error: 'You can only delete your own messages', status: 403 };
-    if (m.media) {
-      const f = await this.ctx.storage.get('f:' + m.media.fid);
-      if (f) {
-        await this.ctx.storage.delete('f:' + m.media.fid);
-        await this.ctx.storage.put('fbytes', Math.max(0, ((await this.ctx.storage.get('fbytes')) || 0) - f.size));
-      }
-    }
+    if (m.media) await this.dropFile(m.media.fid);
     const gone = { s: m.s, by: m.by, at: m.at, deleted: Date.now() };
     await this.ctx.storage.put(key, gone);
     for (const x of meta.members) await this.tell(x, { t: 'del', pair: meta.id, s: m.s });
@@ -465,10 +493,10 @@ export class Pair extends DurableObject {
     if (d.ans[h]) return { error: 'already answered', status: 409 }; // answers are final: no changing it after seeing theirs
     d.ans[h] = { text, at: Date.now() };
     await this.ctx.storage.put('d:' + day, d);
-    const o = this.other(meta, h), both = !!d.ans[o], nm = this.name(s.profiles, h);
+    const o = this.other(meta, h), both = !!d.ans[o], nm = this.name(s.profiles, h), lo = (s.profiles[o] || {}).lang;
     await this.tell(o, { t: 'ans', pair: meta.id, day, by: h, both,
-      n: both ? { title: nm + ' answered 💌', body: 'See both answers: ' + clip(this.forReader(d.text, s.profiles, o), 100), go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day }
-        : { title: nm + ' answered today\'s question', body: 'Answer it too to see what they said', go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day } });
+      n: both ? { title: L(lo, nm + ' answered 💌', nm + ' جواب داد 💌'), body: L(lo, 'See both answers: ', 'جواب هر دوتون رو ببین: ') + clip(this.forReader(d.text, s.profiles, o, d.id, d.fa), 100), go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day }
+        : { title: L(lo, nm + ' answered today\'s question', nm + ' به سؤال امروز جواب داد'), body: L(lo, 'Answer it too to see what they said', 'تو هم جواب بده تا جوابش رو ببینی'), go: 'pair:' + meta.id, tag: 'ans:' + meta.id + day } });
     await this.tell(h, { t: 'ans', pair: meta.id, day, by: h, both });
     return { ok: true, day: this.view(meta, s.profiles, d, h) };
   }
@@ -498,12 +526,12 @@ export class Pair extends DurableObject {
     }
     asked.add(q.id);
     if (!existing) meta.n = (meta.n || 0) + 1;
-    const d = { day, id: q.id, text: q.text, at: Date.now(), ans: {} };
+    const d = { day, id: q.id, text: q.text, fa: q.fa || null, at: Date.now(), ans: {} };
     await this.ctx.storage.put({ ['d:' + day]: d, asked: [...asked], meta });
     for (const h of meta.members) {
       const o = this.other(meta, h);
       await this.tell(h, { t: 'q', pair: meta.id, day, sched,
-        n: { title: '💬 Today\'s question with ' + this.name(s.profiles, o), body: this.forReader(q.text, s.profiles, h), go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
+        n: { title: L((s.profiles[h] || {}).lang, '💬 Today\'s question with ', '💬 سؤال امروز با ') + this.name(s.profiles, o), body: this.forReader(q.text, s.profiles, h, q.id, q.fa), go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
     }
     return d;
   }
@@ -514,7 +542,8 @@ export class Pair extends DurableObject {
     if (!s.meta) return null;
     const l = await this.ctx.storage.list({ prefix: 'd:', reverse: true, limit: 120 });
     const days = [...l.values()].map(d => ({ day: d.day, id: d.id, text: d.text, at: d.at, answered: Object.keys(d.ans) }));
-    return { ...s.meta, profiles: s.profiles, messages: s.mseq || 0, asked: (s.asked || []).length, days, next: await this.ctx.storage.getAlarm(), today: todayIn(s.meta.tz) };
+    const media = (await this.ctx.storage.get('fbytes')) || 0;
+    return { ...s.meta, profiles: s.profiles, messages: s.mseq || 0, media, asked: (s.asked || []).length, days, next: await this.ctx.storage.getAlarm(), today: todayIn(s.meta.tz) };
   }
 
   /** Admin changes: relationship type, question time and zone. Both apps refresh; nobody gets a notification. */
@@ -551,7 +580,7 @@ export class Pair extends DurableObject {
 
   async setProfile(h, p) {
     const profiles = (await this.ctx.storage.get('profiles')) || {};
-    profiles[h] = { name: p.name, emoji: p.emoji };
+    profiles[h] = { name: p.name, emoji: p.emoji, lang: p.lang || 'en' };
     await this.ctx.storage.put('profiles', profiles);
   }
 
@@ -707,10 +736,21 @@ export async function social(req, env, url, json, cors = {}) {
     if (action === 'file' && fid && req.method === 'GET') {
       const f = await p.file(fid);
       if (!f) return json({ error: 'not found' }, 404);
-      return new Response(f.data, { headers: { ...cors, 'Content-Type': f.type, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
+      const headers = { ...cors, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Expose-Headers': 'Content-Disposition' };
+      // files are only ever downloaded, never shown, so nothing in them can run here
+      if (f.file) Object.assign(headers, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(f.name), 'Content-Security-Policy': 'sandbox' });
+      else headers['Content-Type'] = f.type;
+      return new Response(f.data, { headers });
     }
     if (upload && action === 'upload') {
       const bytes = await req.arrayBuffer();
+      const named = url.searchParams.get('name'); // a file (any type) rather than a photo
+      if (named) {
+        if (bytes.byteLength > MAX_FILE) return json({ error: 'Files can be up to 15 MB' }, 413);
+        if (!bytes.byteLength) return json({ error: 'That file is empty' }, 400);
+        const r = await p.upload(me, bytes, cleanMime(req.headers.get('Content-Type')), cleanName(named));
+        return r.error ? json({ error: r.error }, r.status) : json(r);
+      }
       if (bytes.byteLength > MAX_PHOTO) return json({ error: 'That photo is too big' }, 413);
       const type = imageType(bytes);
       if (!type) return json({ error: 'Only photos can be sent' }, 415);

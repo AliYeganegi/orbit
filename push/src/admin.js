@@ -36,7 +36,7 @@ export async function admin(req, env, url, json) {
       if (!x) return { ...p, missing: true };
       const both = x.days.filter(d => d.answered.length === 2).length;
       return { id: p.id, members: x.members, profiles: x.profiles, type: x.type, proposal: x.proposal, time: x.time, tz: x.tz, created: x.created,
-        messages: x.messages, questions: x.days.length, both, lastDay: x.days[0] ? x.days[0].day : null, next: x.next };
+        messages: x.messages, media: x.media || 0, questions: x.days.length, both, lastDay: x.days[0] ? x.days[0].day : null, next: x.next };
     });
     const conns = {};
     for (const r of rows) for (const h of r.members || []) conns[h] = (conns[h] || 0) + 1;
@@ -93,7 +93,9 @@ export async function admin(req, env, url, json) {
       if (!text || !POOLS.includes(body.add.pool) || ![1, 2, 3].includes(tier)) return json({ error: 'Pick a pool, a depth and write the question' }, 400);
       // daily questions are always about the other person, who appears in the text as {them}
       if (!text.includes('{them}')) return json({ error: 'Ask about the other person: put {them} where their name goes' }, 400);
-      b.custom.push({ id: 'c.' + body.add.pool + '.' + Date.now().toString(36), pool: body.add.pool, tier, text, added: Date.now() });
+      const fa = String(body.add.fa || '').trim().slice(0, 200);
+      if (fa && !fa.includes('{them}')) return json({ error: 'The Persian version needs {them} too' }, 400);
+      b.custom.push({ id: 'c.' + body.add.pool + '.' + Date.now().toString(36), pool: body.add.pool, tier, text, fa: fa || undefined, added: Date.now() });
     }
     if (body.remove) b.custom = b.custom.filter(c => c.id !== body.remove);
     if (body.hide !== undefined) {
