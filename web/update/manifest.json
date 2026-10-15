@@ -1,10 +1,10 @@
 {
- "build": 11,
- "version": "1.17",
+ "build": 12,
+ "version": "1.18",
  "minNative": 21,
  "files": {
   "app.css": "a1bc6ce9725f5ded31b6ce081db8315066220ecbdcd2ca3388c87d88392c0f30",
-  "app.js": "69f9feb69ef3f52dfaae733df23a3f119c47da1f428abf763de981621990135a",
+  "app.js": "042b214d45ec07da5f74b46da4a481e0e5d685c75cd039919b7785ee517a7bed",
   "i18n.js": "126e57468cd66dddb26311a6100f7f58e421491ad769eb2c548dc396ca99f027",
   "icons.js": "eae340bd6b52918a078666e1958740d68b7b81ca97d6c345911640e7defce281",
   "index.html": "796f337759fbc239b3f5e30aac232403e28aa96b24a667211fa162b5aae90791",

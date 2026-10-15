@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.17'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.18'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -1801,7 +1801,8 @@ const DatePick = {
   },
   methods: {
     set(k) { this.$emit('update:modelValue', k || null); Native.vibrate(6); },
-    async pickOther() { const v = await pickDate(this.modelValue, { max: this.past ? R.today : '' }); if (v) this.set(v); },
+    // reminders and tasks look ahead (no "Yesterday"); money entries look back
+    async pickOther() { const v = await pickDate(this.modelValue, this.past ? { max: R.today } : { min: R.today }); if (v) this.set(v); },
   },
   template: `<div>
     <div class="chips">
