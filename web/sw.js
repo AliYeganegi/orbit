@@ -1,6 +1,6 @@
 // Orbit service worker: offline cache + push notifications.
 // Bump VERSION whenever any app file changes so installed phones pick up the update.
-const VERSION = 'orbit-v17';
+const VERSION = 'orbit-v18';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'questions.js', 'i18n.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

@@ -104,5 +104,18 @@
  "Daily question": "سؤال روزانه",
  "When a new question arrives and when the other person answers": "وقتی سؤال تازه میاد و وقتی طرف مقابل جواب می‌ده",
  "Create your ID in People to use these": "برای استفاده از این‌ها، اول تو بخش آدم‌ها آیدی بساز",
- "People": "آدم‌ها"
+ "People": "آدم‌ها",
+ "Type any emoji from your keyboard": "هر ایموجی رو از کیبوردت تایپ کن",
+ "Checking for messages": "بررسی پیام‌های تازه",
+ "About every {n}–{n} minutes while the phone is awake. Not checked yet": "تقریباً هر {n} تا {n} دقیقه وقتی گوشی بیداره. هنوز بررسی نشده",
+ "About every {n}–{n} minutes while the phone is awake · last check": "تقریباً هر {n} تا {n} دقیقه وقتی گوشی بیداره · آخرین بررسی",
+ "Right now it comes at {n}. The time is the same for both of you.": "الان ساعت {n} میاد. این ساعت برای هر دوتون یکیه.",
+ "Keep {n}": "همون {n} بمونه",
+ "Accept {n}": "قبول {n}",
+ "Withdraw": "پس گرفتن",
+ "A request is waiting for you. Tap to answer": "یه درخواست منتظر جواب توئه. بزن تا جواب بدی",
+ "The same for both of you. Changes need": "برای هر دوتون یکیه. تغییرش باید تأیید بشه توسط",
+ "to accept": "تا قبول کنه",
+ "Sent. ": "فرستاده شد. ",
+ "wants the daily question at {n}": "می‌خواد سؤال روزانه ساعت {n} بیاد"
 }

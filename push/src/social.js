@@ -291,7 +291,7 @@ export class Pair extends DurableObject {
     const d = await this.lastDay();
     const today = d ? this.view(meta, profiles, d, h) : null;
     return {
-      id: meta.id, with: { handle: o, ...(profiles[o] || {}) }, type: meta.type, proposal: meta.proposal, time: meta.time, tz: meta.tz,
+      id: meta.id, with: { handle: o, ...(profiles[o] || {}) }, type: meta.type, proposal: meta.proposal, time: meta.time, tz: meta.tz, timeProposal: meta.timeProposal || null,
       last, unread, theirRead: read[o] || 0, today, todayKey: todayIn(meta.tz), asked: meta.n,
     };
   }
@@ -475,19 +475,36 @@ export class Pair extends DurableObject {
     return { ok: true };
   }
 
+  /** The question time is shared, so changing it is a request the other person accepts (or not). */
   async setTime(h, time, tz) {
     if (!isHHMM(time)) return { error: 'bad time' };
     const s = await this.all(['meta', 'profiles']);
-    const meta = s.meta;
-    meta.time = time;
-    if (validTz(tz)) meta.tz = tz;
+    const meta = s.meta, o = this.other(meta, h), lo = (s.profiles[o] || {}).lang, nm = this.name(s.profiles, h);
+    if (meta.time === time && !meta.timeProposal) return { ok: true };
+    meta.timeProposal = { time, tz: validTz(tz) ? tz : meta.tz, by: h, at: Date.now() };
     await this.ctx.storage.put('meta', meta);
-    await this.reschedule();
-    const o = this.other(meta, h);
-    await this.tell(o, { t: 'time', pair: meta.id, time, tz: meta.tz, by: h,
-      n: { title: 'Daily question moved to ' + time, body: this.name(s.profiles, h) + ' changed when your question arrives', go: 'pair:' + meta.id, tag: 'time:' + meta.id } });
-    await this.tell(h, { t: 'time', pair: meta.id, time, tz: meta.tz, by: h });
-    return { ok: true };
+    await this.tell(o, { t: 'time', pair: meta.id, state: 'proposed', time, by: h,
+      n: { title: L(lo, nm + ' wants the daily question at ' + time, nm + ' می‌خواد سؤال روزانه ساعت ' + time + ' بیاد'), body: L(lo, 'Open Orbit to accept or keep the current time', 'Orbit رو باز کن تا قبول کنی یا همین ساعت بمونه'), go: 'pair:' + meta.id, tag: 'time:' + meta.id } });
+    await this.tell(h, { t: 'time', pair: meta.id, state: 'proposed', time, by: h });
+    return { ok: true, proposed: true };
+  }
+
+  /** The other person answers a time request (yes = use it). Withdrawing your own request uses yes = false. */
+  async answerTime(h, yes) {
+    const s = await this.all(['meta', 'profiles']);
+    const meta = s.meta, p = meta.timeProposal;
+    if (!p) return { error: 'no request', status: 404 };
+    if (yes && p.by === h) return { error: 'The other person has to accept it', status: 403 };
+    meta.timeProposal = null;
+    if (yes) { meta.time = p.time; meta.tz = p.tz; }
+    await this.ctx.storage.put('meta', meta);
+    if (yes) await this.reschedule();
+    const by = p.by, lb = (s.profiles[by] || {}).lang, nm = this.name(s.profiles, h);
+    if (by !== h) await this.tell(by, { t: 'time', pair: meta.id, state: yes ? 'set' : 'declined', time: p.time, by: h,
+      n: yes ? { title: L(lb, 'Daily question moved to ' + p.time, 'سؤال روزانه رفت ساعت ' + p.time), body: L(lb, nm + ' agreed', nm + ' قبول کرد'), go: 'pair:' + meta.id, tag: 'time:' + meta.id }
+        : { title: L(lb, nm + ' kept the time at ' + meta.time, nm + ' ساعت ' + meta.time + ' رو نگه داشت'), body: L(lb, 'The daily question time didn\'t change', 'ساعت سؤال روزانه عوض نشد'), go: 'pair:' + meta.id, tag: 'time:' + meta.id } });
+    await this.tell(h, { t: 'time', pair: meta.id, state: yes ? 'set' : 'declined', time: p.time, by: h });
+    return { ok: true, time: meta.time };
   }
 
   async answer(h, day, text) {
@@ -559,7 +576,7 @@ export class Pair extends DurableObject {
     if (b.tz !== undefined && !validTz(b.tz)) return { error: 'bad time zone' };
     const first = !meta.type && b.type;
     if (b.type !== undefined) { meta.type = b.type; meta.proposal = null; }
-    if (b.time !== undefined) meta.time = b.time;
+    if (b.time !== undefined) { meta.time = b.time; meta.timeProposal = null; }
     if (b.tz !== undefined) meta.tz = b.tz;
     await this.ctx.storage.put('meta', meta);
     await registry(this.env).putPair(meta.id, { type: meta.type });
@@ -783,6 +800,8 @@ export async function social(req, env, url, json, cors = {}) {
     if (action === 'type') return done(await p.propose(me, String(body.type || '')));
     if (action === 'decline') return done(await p.decline(me));
     if (action === 'time') return done(await p.setTime(me, String(body.time || ''), body.tz));
+    if (action === 'timeok') return done(await p.answerTime(me, true));
+    if (action === 'timeno') return done(await p.answerTime(me, false));
     if (action === 'answer') {
       const text = cleanText(body.text);
       if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(String(body.day))) return json({ error: 'empty' }, 400);

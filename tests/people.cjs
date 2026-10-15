@@ -109,6 +109,19 @@ const harvest = async page => {
   await B.shot('people-8-both');
   A.ok('answers hidden until both answer, then shown to both');
 
+  // changing the question time asks the other person, who sees the request and accepts it
+  await A.p.click('button[aria-label="Connection settings"]');
+  await A.p.click('.sheet .time-chip');
+  await A.p.click('.tp-grid button:has-text("21")'); await A.p.click('.tp-grid button:has-text(":00")');
+  await A.p.click('.picker button:has-text("Done")');
+  await A.p.waitForSelector('.sheet:has-text("Waiting for Sara to accept 21:00")');
+  await A.p.keyboard.press('Escape');
+  await B.p.waitForSelector('.time-req:has-text("wants the daily question at 21:00")', { timeout: 8000 });
+  await B.shot('people-7b-time-request');
+  await B.p.click('.time-req button:has-text("Accept 21:00")');
+  await A.p.waitForSelector('.q-card.today .q-head:has-text("21:00")', { timeout: 8000 });
+  A.ok('time change is a request; the other person accepts it');
+
   // chat, live both ways, with read ticks
   await A.p.click('.pair-tabs button:has-text("Chat")');
   await A.p.fill('.composer textarea', 'Hi Sara 👋');

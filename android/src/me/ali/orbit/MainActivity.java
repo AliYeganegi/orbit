@@ -215,6 +215,7 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         resumed = false;
+        SocialPoll.scheduleNext(this, 60_000L); // leaving the app: make sure message checks are running
         web.onPause();
     }
 
@@ -295,6 +296,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void socialAuth(String url, String token, long seen) {
             SocialPoll.configure(MainActivity.this, url, token, seen);
+        }
+
+        @JavascriptInterface
+        public String socialStatus() {
+            return SocialPoll.status(MainActivity.this);
         }
 
         @JavascriptInterface

@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.18'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.19'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -1000,7 +1000,7 @@ const socTodo = computed(() => {
   if (!Soc.me) return { reqs: 0, questions: [], unread: 0, total: 0 };
   const reqs = Object.keys(Soc.me.inReq).length;
   const questions = socPairs.value.filter(p => p.today && !p.today.mine && p.today.day === p.todayKey);
-  const proposals = socPairs.value.filter(p => p.proposal && p.proposal.by !== Soc.me.handle).length;
+  const proposals = socPairs.value.filter(p => (p.proposal && p.proposal.by !== Soc.me.handle) || (p.timeProposal && p.timeProposal.by !== Soc.me.handle)).length;
   const unread = socPairs.value.reduce((n, p) => n + (p.unread || 0), 0);
   return { reqs, questions, unread, proposals, total: reqs + questions.length + unread + proposals };
 });
@@ -1815,7 +1815,8 @@ const DatePick = {
 
 /* ---------- date & time pickers: our own, so they look and work the same on every phone ---------- */
 const Pick = reactive({ kind: '', value: '', min: '', max: '', title: '', done: null });
-const roundTime = () => { const d = new Date(Date.now() + 3600e3); return pad(d.getHours()) + ':00'; };
+// a sensible starting time: the first full hour at least half an hour away (at 16:59 that's 18:00, not 17:00)
+const roundTime = () => { const d = new Date(Date.now() + 30 * 60e3); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1); return pad(d.getHours()) + ':00'; };
 function pickTime(value, title) { return new Promise(done => Object.assign(Pick, { kind: 'time', value: value || roundTime(), min: '', max: '', title: title || 'Time', done })); }
 function pickDate(value, o = {}) { return new Promise(done => Object.assign(Pick, { kind: 'date', value: value || R.today, min: o.min || '', max: o.max || '', title: o.title || 'Date', done })); }
 
@@ -1888,6 +1889,27 @@ const DateChip = {
   methods: { async open() { const d = await pickDate(this.modelValue, { min: this.min, max: this.max, title: this.title }); if (d) this.$emit('update:modelValue', d); } },
   template: `<button v-if="field" type="button" class="field row date-field" @click="open"><Ic n="calendar" :s="18" class="muted"/><span class="grow">{{ modelValue ? gFull(modelValue) : placeholder }}</span><span class="muted" style="font-size:13px">{{ modelValue ? jFull(modelValue) : '' }}</span></button>
     <button v-else type="button" class="chip" :class="{on: modelValue}" @click="open"><Ic n="calendar" :s="15"/>{{ modelValue ? gLabel(modelValue) + ' · ' + jLabel(modelValue) : placeholder }}</button>`,
+};
+
+/** Preset emoji plus "type your own": any emoji from the keyboard works. */
+const EmojiPick = {
+  props: { modelValue: String, list: Array, chips: Boolean },
+  emits: ['update:modelValue', 'picked'],
+  setup(props, { emit }) {
+    const typed = ref('');
+    const shown = computed(() => (props.modelValue && !props.list.includes(props.modelValue) ? [props.modelValue, ...props.list] : props.list));
+    const pick = e => { emit('update:modelValue', e); emit('picked', e); Native.vibrate(6); };
+    watch(typed, v => {
+      const e = v.trim() && firstEmoji(v);
+      if (e && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(e)) { pick(e); typed.value = ''; }
+    });
+    return { typed, shown, pick };
+  },
+  template: `<div>
+    <div v-if="chips" class="chips" style="justify-content:center"><button v-for="e in shown" :key="e" class="chip av-pick" :class="{on: modelValue === e}" @click="pick(e)">{{ e }}</button></div>
+    <div v-else class="emoji-grid"><button v-for="e in shown" :key="e" :class="{on: modelValue === e}" @click="pick(e)">{{ e }}</button></div>
+    <label class="field row emoji-own"><Ic n="smile" :s="17" class="muted"/><input class="grow" v-model="typed" placeholder="Type any emoji from your keyboard" enterkeyhint="done"></label>
+  </div>`,
 };
 
 const Empty = {
@@ -1973,7 +1995,6 @@ const TxSheet = {
     // the person's own categories, with any emoji
     const nc = reactive({ open: false, name: '', emoji: '🍕', typed: '' });
     function newCat() { Object.assign(nc, { open: true, name: '', emoji: CAT_EMOJI[Math.floor(Math.random() * CAT_EMOJI.length)], typed: '' }); }
-    watch(() => nc.typed, v => { if (v.trim()) nc.emoji = firstEmoji(v); });
     function addCat() {
       const name = nc.name.trim(); if (!name) return;
       const c = { id: 'c_' + uid(), l: name.slice(0, 24), e: nc.emoji || '🏷️', c: HABIT_COLORS[(S.customCats.length + 3) % HABIT_COLORS.length], type: d.type === 'in' ? 'in' : 'out' };
@@ -2046,8 +2067,7 @@ const TxSheet = {
       <div v-if="nc.open" class="card cat-maker">
         <div class="row" style="gap:10px"><span class="cat-e">{{ nc.emoji }}</span>
           <input class="field grow" v-model="nc.name" placeholder="Category name, e.g. Pets" maxlength="24" enterkeyhint="done" @keydown.enter="addCat"></div>
-        <div class="emoji-grid sm" style="margin-top:10px"><button v-for="e in CAT_EMOJI" :key="e" :class="{on: nc.emoji === e}" @click="nc.emoji = e">{{ e }}</button></div>
-        <input class="field" v-model="nc.typed" placeholder="…or type any emoji from your keyboard" style="margin-top:8px">
+        <EmojiPick v-model="nc.emoji" :list="CAT_EMOJI" class="sm" style="margin-top:10px"/>
         <div v-if="mine.length" class="chips" style="margin-top:10px"><span class="muted" style="font-size:12.5px;align-self:center">Yours:</span>
           <span v-for="c in mine" :key="c.id" class="chip">{{ c.e }} {{ c.l }}<button @click="delCat(c)" :aria-label="'Delete ' + c.l" style="display:grid;margin-left:2px"><Ic n="x" :s="13"/></button></span></div>
         <div class="btn-row" style="margin-top:12px"><button class="btn" @click="nc.open = false">Cancel</button><button class="btn primary" :disabled="!nc.name.trim()" @click="addCat">Add category</button></div>
@@ -2269,7 +2289,7 @@ const TodayView = {
       <div v-for="x in socTodo.questions.slice(0, 2)" :key="x.id" class="pq"><b>💬 {{ whoName(x.with) }}</b><span translate="no">{{ qText(x.today, x.with) }}</span></div>
       <div v-if="socTodo.unread" class="muted" style="font-size:14px;margin-top:4px">{{ socTodo.unread }} new message{{ socTodo.unread > 1 ? 's' : '' }}</div>
       <div v-if="socTodo.reqs" class="muted" style="font-size:14px;margin-top:4px">{{ socTodo.reqs }} connection request{{ socTodo.reqs > 1 ? 's' : '' }}</div>
-      <div v-if="socTodo.proposals" class="muted" style="font-size:14px;margin-top:4px">Someone set your relationship type. Tap to accept</div>
+      <div v-if="socTodo.proposals" class="muted" style="font-size:14px;margin-top:4px">A request is waiting for you. Tap to answer</div>
     </div>
 
     <div v-if="upcoming.length" class="card" style="margin-top:14px">
@@ -2565,7 +2585,7 @@ const HabitsView = {
         <div class="day-dots"><button v-for="x in DAY_DOTS" :key="x.v" :class="{on: !d.days.length || d.days.includes(x.v)}" @click="toggleRepeatDay(x.v)">{{ x.l }}</button></div>
         <div class="muted" style="font-size:12.5px;margin:6px 2px 0">{{ d.days.length ? 'Only on these days. Streaks skip the others.' : 'Every day' }}</div>
         <span class="flabel">Icon</span>
-        <div class="emoji-grid"><button v-for="e in HABIT_EMOJI" :key="e" :class="{on: d.emoji === e}" @click="d.emoji = e">{{ e }}</button></div>
+        <EmojiPick v-model="d.emoji" :list="HABIT_EMOJI"/>
         <span class="flabel">Color</span>
         <div class="swatches"><button v-for="c in HABIT_COLORS" :key="c" :style="{'--c': c}" :class="{on: d.color === c}" @click="d.color = c"></button></div>
         <div class="btn-row">
@@ -3034,7 +3054,7 @@ const CountdownsView = {
       <div style="--acc:var(--c-count)">
         <input class="field" v-model="d.title" placeholder="e.g. Sara's birthday" enterkeyhint="done">
         <span class="flabel">Icon</span>
-        <div class="emoji-grid"><button v-for="e in CD_EMOJI" :key="e" :class="{on: d.emoji === e}" @click="d.emoji = e">{{ e }}</button></div>
+        <EmojiPick v-model="d.emoji" :list="CD_EMOJI"/>
         <span class="flabel">Date</span>
         <DateChip field v-model="d.date" placeholder="Pick a date" title="Date"/>
         <span class="flabel">Repeat</span>
@@ -3405,6 +3425,7 @@ function shareText(text, done) {
 function pairLine(p) {
   const me = Soc.acct && Soc.acct.handle, nm = whoName(p.with);
   if (p.proposal && p.proposal.by !== me) return { t: nm + ' says you are ' + REL[p.proposal.type].l + ' ' + REL[p.proposal.type].e, hot: true };
+  if (p.timeProposal && p.timeProposal.by !== me) return { t: '⏰ ' + nm + ' wants the daily question at ' + p.timeProposal.time, hot: true };
   if (!p.type) return { t: p.proposal ? 'Waiting for ' + nm + ' to accept' : 'Choose what you are to each other', hot: !p.proposal };
   if (p.today && p.today.day === p.todayKey && !p.today.mine) return { t: '💬 Today\'s question is waiting' + (p.today.theyAnswered ? ' · ' + nm + ' answered' : ''), hot: true };
   if (p.today && p.today.day === p.todayKey && !p.today.theirs) return { t: 'You answered · waiting for ' + nm };
@@ -3480,7 +3501,7 @@ const PeopleView = {
         <p class="muted" style="margin-top:6px;font-size:14.5px">Connect with your partner, friends or family. Each day you both answer the same question, and you only see their answer after sending yours.</p>
         <template v-if="!f.keyMode">
           <span class="flabel" style="text-align:left">Pick your look</span>
-          <div class="chips" style="justify-content:center"><button v-for="e in AVATARS" :key="e" class="chip av-pick" :class="{on: f.emoji === e}" @click="f.emoji = e">{{ e }}</button></div>
+          <EmojiPick v-model="f.emoji" :list="AVATARS" chips/>
           <span class="flabel" style="text-align:left">Your name</span>
           <input class="field" v-model="f.name" placeholder="How friends see you" maxlength="40" enterkeyhint="next">
           <span class="flabel" style="text-align:left">Choose your ID</span>
@@ -3568,7 +3589,7 @@ const PeopleView = {
 
     <Sheet :open="menu" title="Your profile" @close="menu = false">
       <div v-if="Soc.me" style="--acc:var(--c-people)">
-        <div class="chips"><button v-for="e in AVATARS" :key="e" class="chip av-pick" :class="{on: prof.emoji === e}" @click="prof.emoji = e">{{ e }}</button></div>
+        <EmojiPick v-model="prof.emoji" :list="AVATARS" chips/>
         <span class="flabel">Name</span>
         <input class="field" v-model="prof.name" maxlength="40" enterkeyhint="done">
         <button class="btn primary block" style="margin-top:14px" :disabled="!prof.name.trim()" @click="saveProfile">Save</button>
@@ -3624,7 +3645,7 @@ const PairView = {
     const meH = computed(() => Soc.acct && Soc.acct.handle);
     const nm = computed(() => (p.value ? whoName(p.value.with) : ''));
     const tab = ref(null);
-    const needsQ = c => !c.type || (c.proposal && c.proposal.by !== meH.value) || (c.today && c.today.day === c.todayKey && !c.today.mine);
+    const needsQ = c => !c.type || (c.proposal && c.proposal.by !== meH.value) || (c.timeProposal && c.timeProposal.by !== meH.value) || (c.today && c.today.day === c.todayKey && !c.today.mine);
     const cached = pairOf(id);
     if (cached) tab.value = needsQ(cached) ? 'q' : 'chat';
     if (tab.value === 'chat' && Soc.chats[id]) markRead(id);
@@ -3785,14 +3806,19 @@ const PairView = {
       try { await api('/p/' + id + '/type', { type: t }); await loadPair(id); say('You\'re now ' + REL[t].l + ' ' + REL[t].e); Native.vibrate(20); } catch (e) { say(netErr(e)); }
     }
     const relOpen = ref(false), leaveAsk = ref(false);
+    // the time is shared: changing it asks the other person
     async function setTime(t) {
-      try { await api('/p/' + id + '/time', { time: t, tz: TZ }); await loadPair(id); say('Daily question at ' + t + ' for both of you'); } catch (e) { say(netErr(e)); }
+      if (p.value && t === p.value.time && !p.value.timeProposal) return;
+      try { await api('/p/' + id + '/time', { time: t, tz: TZ }); await loadPair(id); say('Sent. ' + nm.value + ' needs to accept ' + t); } catch (e) { say(netErr(e)); }
+    }
+    async function answerTime(yes) {
+      try { await api('/p/' + id + '/' + (yes ? 'timeok' : 'timeno'), {}); await loadPair(id); if (yes) say('Daily question at ' + p.value.time + ' for both of you'); } catch (e) { say(netErr(e)); }
     }
     async function leave() {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { attachMenu, attachPhoto, attachFile, save, viewerMsg, canFile, fileSize, fileIcon, atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { answerTime, attachMenu, attachPhoto, attachFile, save, viewerMsg, canFile, fileSize, fileIcon, atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
     <div class="pair-bar">
@@ -3808,6 +3834,13 @@ const PairView = {
     <template v-if="st && p">
 
       <template v-if="tab === 'q'">
+        <div v-if="p.timeProposal && p.timeProposal.by !== meH" class="card q-card time-req" style="margin-top:12px">
+          <div style="font-size:30px">⏰</div>
+          <h3>{{ nm }} wants the daily question at {{ p.timeProposal.time }}</h3>
+          <p class="muted">Right now it comes at {{ p.time }}. The time is the same for both of you.</p>
+          <div class="btn-row"><button class="btn" @click="answerTime(false)">Keep {{ p.time }}</button><button class="btn primary" @click="answerTime(true)">Accept {{ p.timeProposal.time }}</button></div>
+        </div>
+        <div v-else-if="p.timeProposal" class="hint" style="margin-top:12px"><Ic n="clock" :s="16"/><span class="grow">Waiting for {{ nm }} to accept {{ p.timeProposal.time }}</span><button class="btn sm" @click="answerTime(false)">Withdraw</button></div>
         <div v-if="p.proposal && p.proposal.by !== meH" class="card q-card" style="margin-top:12px">
           <div style="font-size:34px">{{ REL[p.proposal.type].e }}</div>
           <h3>{{ nm }} says you are {{ REL[p.proposal.type].l }}</h3>
@@ -3927,7 +3960,7 @@ const PairView = {
         <RelPick :p="p" @done="relOpen = false"/>
         <div class="muted" style="font-size:12.5px;margin:8px 2px 0">{{ p.proposal ? (p.proposal.by === meH ? 'Waiting for ' + nm + ' to accept ' + REL[p.proposal.type].l : nm + ' suggested ' + REL[p.proposal.type].l) : 'Changes need ' + nm + ' to accept.' }}</div>
         <div class="settings-group" style="box-shadow:none;margin-top:16px">
-          <div class="list-row"><div class="grow"><div class="t">Daily question time</div><div class="s">The same for both of you{{ tzNote }}</div></div>
+          <div class="list-row"><div class="grow"><div class="t">Daily question time</div><div class="s">{{ p.timeProposal ? (p.timeProposal.by === meH ? 'Waiting for ' + nm + ' to accept ' + p.timeProposal.time : nm + ' asked for ' + p.timeProposal.time) : 'The same for both of you. Changes need ' + nm + ' to accept' }}{{ tzNote }}</div></div>
             <TimeChip :model-value="p.time" @update:model-value="setTime" title="Daily question time"/></div>
         </div>
         <button class="btn danger block" style="margin-top:18px" @click="leaveAsk = true">Remove {{ nm }}</button>
@@ -3952,7 +3985,16 @@ const PairView = {
 
 const NotificationsView = {
   setup() {
-    const ICON = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'], reminders: ['bell', 'var(--c-mood)'] };
+    // Android has no Web Push: show when the phone last checked the server for messages
+    const pollLine = computed(() => {
+      R.now; if (!AN || !AN.socialStatus) return '';
+      let st = {}; try { st = JSON.parse(AN.socialStatus()); } catch (e) {}
+      if (!st.last) return 'About every 1–2 minutes while the phone is awake. Not checked yet';
+      return 'About every 1–2 minutes while the phone is awake · last check ' + ago(st.last) + (st.result && st.result !== 'ok' && st.result !== 'checking' ? ' (' + st.result + ')' : '');
+    });
+    const ICONS = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'], reminders: ['bell', 'var(--c-mood)'], social: ['heart', 'var(--c-people)'] };
+    // any kind of notification without its own icon gets the bell (an unknown kind used to break this screen)
+    const ICON = new Proxy(ICONS, { get: (t, k) => t[k] || ['bell', 'var(--muted)'] });
     const upcoming = computed(() => {
       R.now;
       const rem = S.reminders.filter(r => r.on !== false).flatMap(r => remNext(r).map(at => ({ id: r.id + at, at, ch: r.water ? 'water' : 'reminders', title: r.emoji + ' ' + r.title })));
@@ -3966,7 +4008,7 @@ const NotificationsView = {
       if (!Rem.push.token) return 'off';
       return Rem.state === 'error' ? 'error' : 'on';
     });
-    return { upcoming, whenLabel, status, ICON, everyLabel, hm };
+    return { pollLine, upcoming, whenLabel, status, ICON, everyLabel, hm };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <Head title="Notifications" :sub="Native.has ? 'Delivered by this phone, even offline' : 'Delivered by Orbit\\'s push server'"/>
@@ -4033,6 +4075,7 @@ const NotificationsView = {
       <div class="list-row"><span class="bubble" style="--c:var(--c-people)"><Ic n="heart" :s="18"/></span>
         <div class="grow"><div class="t">Daily question</div><div class="s">When a new question arrives and when the other person answers</div></div><Toggle v-model="S.settings.notify.question"/></div>
       <div v-if="!Soc.acct" class="list-row"><div class="grow s muted">Create your ID in People to use these</div></div>
+      <div v-if="Soc.acct && pollLine" class="list-row"><div class="grow"><div class="t">Checking for messages</div><div class="s">{{ pollLine }}</div></div></div>
     </div>
 
     <div class="label">Coming up</div>
@@ -4338,7 +4381,7 @@ const RemSheet = {
         </div>
         <div v-if="need === 'title'" class="hint warn" style="margin-top:8px"><span class="grow">Give the reminder a name</span></div>
         <Transition name="fade"><div v-if="emojiOpen" style="margin-top:12px">
-          <div class="emoji-grid"><button v-for="e in REM_EMOJI" :key="e" :class="{on: d.emoji === e}" @click="d.emoji = e; emojiOpen = false">{{ e }}</button></div>
+          <EmojiPick v-model="d.emoji" :list="REM_EMOJI" @picked="emojiOpen = false"/>
           <div class="swatches" style="margin-top:12px"><button v-for="c in HABIT_COLORS" :key="c" :style="{'--c': c}" :class="{on: d.color === c}" @click="d.color = c"></button></div>
         </div></Transition>
         <textarea class="field" v-model="d.note" :placeholder="d.water ? 'Details (optional). The notification shows your progress.' : 'Details shown in the notification (optional)'" style="min-height:64px;margin-top:12px"></textarea>
@@ -4410,8 +4453,23 @@ const RemSheet = {
   </Sheet>`,
 };
 
+/** Time left until `at`, as months/days/hours/minutes/seconds, largest unit first. */
+function timeLeft(at, now) {
+  let s = Math.max(0, Math.floor((at - now) / 1000));
+  const parts = [], U = FA ? ['ماه', 'روز', 'ساعت', 'دقیقه', 'ثانیه'] : ['mo', 'd', 'h', 'm', 's'];
+  const mo = Math.floor(s / 2629800); s -= mo * 2629800; // average month
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  [mo, d, h, m, s].forEach((v, i) => { if (v || parts.length || i >= 3) parts.push(FA ? v + ' ' + U[i] : (i >= 2 && parts.length ? pad(v) : v) + U[i]); });
+  return parts.join(' ');
+}
+
 const RemindersView = {
   setup() {
+    const tick = ref(Date.now()); // the countdowns move every second while this screen is open
+    const tickT = setInterval(() => { tick.value = Date.now(); }, 1000);
+    onBeforeUnmount(() => clearInterval(tickT));
     // a reminder whose time has passed isn't "done": it just went off. Keep those apart from what's coming.
     const wentOff = r => { if (r.kind !== 'once' || !r.date || !r.time) return 0; const d = parseKey(r.date); const [h, m] = r.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); };
     const all = computed(() => { R.now; return S.reminders.map(r => { const next = r.on === false ? [] : remNext(r); return { r, next: next[0] || null, past: r.on !== false && !next.length, at: wentOff(r) }; }); });
@@ -4424,7 +4482,7 @@ const RemindersView = {
     const active = computed(() => S.reminders.filter(r => r.on !== false).length);
     function toggle(r, v) { r.on = v; Native.vibrate(8); if (v && Native.has) Native.askNotify(); say(v ? 'Reminder on' : 'Paused. Turn it back on any time'); }
     function remove(r) { const i = S.reminders.indexOf(r); S.reminders.splice(i, 1); say('"' + r.title + '" deleted', () => S.reminders.splice(i, 0, r)); }
-    return { groups, again, active, toggle, remove, whenShort };
+    return { tick, timeLeft, groups, again, active, toggle, remove, whenShort };
   },
   template: `<div class="view" style="--acc:var(--c-mood)">
     <Head title="Reminders" :sub="active ? active + ' active' : 'Nudges you set yourself'"/>
@@ -4443,6 +4501,7 @@ const RemindersView = {
                 <div class="n" v-if="x.r.on === false">Paused</div>
                 <div class="n" v-else-if="x.past">{{ x.at ? 'Was ' + whenShort(x.at) : 'Its last time has passed' }}</div>
                 <div class="n on" v-else>Next {{ whenShort(x.next) }}</div>
+                <div v-if="x.next && x.r.on !== false && !x.past" class="left" translate="no">⏳ {{ timeLeft(x.next, tick) }}</div>
               </div>
               <button v-if="x.past" class="btn sm" @click.stop="again(x)" @pointerdown.stop>Set again</button>
               <Toggle v-else :model-value="x.r.on !== false" @update:model-value="v => toggle(x.r, v)" @click.stop @pointerdown.stop/>
@@ -4618,7 +4677,7 @@ for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.glob
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
   .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding).component('RelPick', RelPick)
-  .component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip);
+  .component('EmojiPick', EmojiPick).component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip);
 app.mount('#app');
 
 if (!Native.has) {

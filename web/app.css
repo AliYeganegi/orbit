@@ -965,3 +965,8 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 /* the conversation's header and its Daily question / Chat tabs stay in reach while scrolling */
 .pair-bar { position: sticky; top: 0; z-index: 30; margin: 0 -18px; padding: env(safe-area-inset-top) 18px 8px; background: var(--bg); box-shadow: 0 8px 14px -12px rgba(0, 0, 0, .5); }
 .pair-view { padding-top: 0; }
+
+.rem .left { font-size: 12.5px; font-weight: 650; color: var(--text-2); font-variant-numeric: tabular-nums; margin-top: 2px; }
+
+.emoji-own { margin-top: 8px; padding: 9px 12px; gap: 10px; }
+.emoji-own input { background: none; border: 0; outline: none; font-size: 15px; min-width: 0; padding: 0; }

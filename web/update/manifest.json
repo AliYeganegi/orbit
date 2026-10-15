@@ -1,11 +1,11 @@
 {
- "build": 12,
- "version": "1.18",
+ "build": 14,
+ "version": "1.19",
  "minNative": 21,
  "files": {
-  "app.css": "a1bc6ce9725f5ded31b6ce081db8315066220ecbdcd2ca3388c87d88392c0f30",
-  "app.js": "042b214d45ec07da5f74b46da4a481e0e5d685c75cd039919b7785ee517a7bed",
-  "i18n.js": "126e57468cd66dddb26311a6100f7f58e421491ad769eb2c548dc396ca99f027",
+  "app.css": "34ebf6934771fed7ef2afd1773a5879e7c53d2e98b81724a634a293a70a8bf1d",
+  "app.js": "df467a776abae814295a8466ae5b46b36d3de3a79ce803310a62ca2f4c36a0e5",
+  "i18n.js": "50802b28520587a8023b20cef6ef264e4b2786efa98ca9ce1757ea1132ea2539",
   "icons.js": "eae340bd6b52918a078666e1958740d68b7b81ca97d6c345911640e7defce281",
   "index.html": "796f337759fbc239b3f5e30aac232403e28aa96b24a667211fa162b5aae90791",
   "inter.woff2": "f052ee44c3728dfd23aba8a4567150bc314d23903026fbb6ad089422c2df56af",
@@ -16,10 +16,10 @@
   "vue.js": "c459ba7cc8db65c982589fa5d64c7ff478877e8e5b0fd75683207cec6a4e89e8"
  },
  "native": {
-  "code": 25,
-  "name": "1.17",
-  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.17/Orbit-1.17.apk",
-  "sha256": "9bd4daae645d0c8de1551c7ddb5d02a6a755ff2dda7dcc385632545e66cedc52",
-  "size": 333358
+  "code": 26,
+  "name": "1.19",
+  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.19/Orbit-1.19.apk",
+  "sha256": "8a89ff813e25555aaffcc3fac8108bdd207dc61721b4ac95551b336f5459a493",
+  "size": 337454
  }
 }

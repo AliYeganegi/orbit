@@ -205,10 +205,22 @@ try {
   assert.equal((await call('/s/p/' + pid + '/time', { body: { time: '21:30', tz: 'Asia/Tehran' }, token: ta })).status, 200);
   const evs = (await call('/s/events?since=0', { token: tb })).data;
   assert.ok(evs.events.length >= 5 && evs.seq === evs.events.at(-1).seq);
-  assert.ok(evs.events.some(e => e.t === 'time' && e.n && e.n.title === 'Daily question moved to 21:30'));
+  assert.ok(evs.events.some(e => e.t === 'time' && e.n && e.n.title === 'Ali wants the daily question at 21:30'), 'the other person is asked');
   const later = (await call('/s/events?since=' + evs.seq, { token: tb })).data;
   assert.equal(later.events.length, 0);
-  console.log('✓ question time, event log');
+  // a time change is a request: nothing changes until the other person accepts
+  let sum = (await call('/s/p/' + pid + '/state', { token: tb })).data;
+  assert.deepEqual([sum.time, sum.timeProposal.time, sum.timeProposal.by], ['20:00', '21:30', A]);
+  assert.equal((await call('/s/p/' + pid + '/timeok', { body: {}, token: ta })).status, 403, 'can\'t accept your own request');
+  assert.equal((await call('/s/p/' + pid + '/timeok', { body: {}, token: tb })).status, 200);
+  sum = (await call('/s/p/' + pid + '/state', { token: ta })).data;
+  assert.deepEqual([sum.time, sum.timeProposal], ['21:30', null]);
+  assert.ok((await call('/s/events?since=0', { token: ta })).data.events.some(e => e.t === 'time' && e.state === 'set' && e.n && e.n.title === 'Daily question moved to 21:30'), 'the asker hears back');
+  await call('/s/p/' + pid + '/time', { body: { time: '07:00' }, token: tb });
+  assert.equal((await call('/s/p/' + pid + '/timeno', { body: {}, token: ta })).status, 200);
+  sum = (await call('/s/p/' + pid + '/state', { token: ta })).data;
+  assert.deepEqual([sum.time, sum.timeProposal], ['21:30', null], 'declined: the time stays');
+  console.log('✓ question time (asked, accepted, declined), event log');
 
   // profile changes reach the pair; leaving ends it for both
   await call('/s/me', { body: { name: 'Ali Y' }, token: ta });
