@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.19'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.20'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -3030,7 +3030,12 @@ const CountdownsView = {
     function remove() { const c = editing.value, i = S.countdowns.indexOf(c); S.countdowns.splice(i, 1); open.value = false; say('Countdown deleted', () => S.countdowns.splice(i, 0, c)); }
     const hero = computed(() => cdSorted.value.find(x => x.days >= 0));
     const rest = computed(() => cdSorted.value.filter(x => x !== hero.value));
-    return { open, editing, d, edit, save, remove, hero, rest, CD_EMOJI };
+    // a live countdown to the start of the day, like the reminders
+    const tick = ref(Date.now());
+    const tickT = setInterval(() => { tick.value = Date.now(); }, 1000);
+    onBeforeUnmount(() => clearInterval(tickT));
+    const startOf = k => parseKey(k).getTime();
+    return { tick, timeLeft, startOf, open, editing, d, edit, save, remove, hero, rest, CD_EMOJI };
   },
   template: `<div class="view" style="--acc:var(--c-count)">
     <Head title="Countdowns" sub="Birthdays, trips, deadlines"/>
@@ -3038,13 +3043,15 @@ const CountdownsView = {
       <div class="e">{{ hero.c.emoji }}</div>
       <div class="num">{{ hero.days === 0 ? '🎉' : hero.days }}</div>
       <div class="u">{{ hero.days === 0 ? 'It\\'s today!' : 'day' + (hero.days === 1 ? '' : 's') + ' to go' }}</div>
+      <div v-if="hero.days > 0" class="cd-left" translate="no">⏳ {{ timeLeft(startOf(hero.k), tick) }}</div>
       <div class="t">{{ hero.c.title }}</div>
       <div class="u" style="font-size:13px">{{ gFull(hero.k) }} · {{ jFull(hero.k) }}</div>
     </div>
     <div class="stack" style="margin-top:12px">
       <div v-for="x in rest" :key="x.c.id" class="card cd tap" :class="{soon: x.days >= 0 && x.days <= 7, past: x.days < 0}" @click="edit(x.c)">
         <div class="e">{{ x.c.emoji }}</div>
-        <div class="n"><b translate="no">{{ x.c.title }}</b><small>{{ gLabel(x.k) }} · {{ jLabel(x.k) }}{{ x.c.repeat !== 'none' ? ' · yearly' : '' }}</small></div>
+        <div class="n"><b translate="no">{{ x.c.title }}</b><small>{{ gLabel(x.k) }} · {{ jLabel(x.k) }}{{ x.c.repeat !== 'none' ? ' · yearly' : '' }}</small>
+          <small v-if="x.days > 0" class="left" translate="no">⏳ {{ timeLeft(startOf(x.k), tick) }}</small></div>
         <div class="d"><b>{{ Math.abs(x.days) }}</b><small>{{ x.days < 0 ? 'days ago' : 'days' }}</small></div>
       </div>
     </div>

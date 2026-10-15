@@ -970,3 +970,6 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 
 .emoji-own { margin-top: 8px; padding: 9px 12px; gap: 10px; }
 .emoji-own input { background: none; border: 0; outline: none; font-size: 15px; min-width: 0; padding: 0; }
+
+.cd-hero .cd-left { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 4px 0 2px; opacity: .95; }
+.cd .n .left { display: block; font-variant-numeric: tabular-nums; font-weight: 650; color: var(--text-2); margin-top: 2px; }
