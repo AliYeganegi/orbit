@@ -98,5 +98,11 @@
  "Add time": "افزودن ساعت",
  "Tip time": "ساعت نکته",
  "Pill time": "ساعت قرص",
- "Go to the latest message": "رفتن به آخرین پیام"
+ "Go to the latest message": "رفتن به آخرین پیام",
+ "Messages": "پیام‌ها",
+ "New messages, reactions and connection requests": "پیام‌های تازه، واکنش‌ها و درخواست‌های ارتباط",
+ "Daily question": "سؤال روزانه",
+ "When a new question arrives and when the other person answers": "وقتی سؤال تازه میاد و وقتی طرف مقابل جواب می‌ده",
+ "Create your ID in People to use these": "برای استفاده از این‌ها، اول تو بخش آدم‌ها آیدی بساز",
+ "People": "آدم‌ها"
 }

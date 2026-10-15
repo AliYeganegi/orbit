@@ -78,7 +78,7 @@ final class Sms {
             while (q.length() > MAX_QUEUE) q.remove(0);
             prefs(c).edit().putString("queue", q.toString()).apply();
         } catch (JSONException ignored) { }
-        notifyNew(c, body);
+        // no notification: any SMS that merely mentions money would trigger one. Drafts show up in Money instead.
         MainActivity.pokeApp();
     }
 
@@ -86,30 +86,5 @@ final class Sms {
         String q = prefs(c).getString("queue", "[]");
         prefs(c).edit().putString("queue", "[]").apply();
         return q;
-    }
-
-    private static void notifyNew(Context c, String body) {
-        NotificationManager nm = c.getSystemService(NotificationManager.class);
-        if (nm == null) return;
-        if (nm.getNotificationChannel("money") == null) {
-            NotificationChannel ch = new NotificationChannel("money", "Bank transactions", NotificationManager.IMPORTANCE_DEFAULT);
-            ch.setDescription("When a bank SMS is turned into a draft transaction");
-            nm.createNotificationChannel(ch);
-        }
-        String preview = body.trim().replaceAll("\\s*\\n+\\s*", " · ");
-        if (preview.length() > 120) preview = preview.substring(0, 120) + "…";
-        Intent open = new Intent(c, MainActivity.class).setData(Uri.parse("orbit://open/money")).putExtra("go", "money")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent pi = PendingIntent.getActivity(c, NOTIF_ID, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        Notification n = new Notification.Builder(c, "money")
-                .setSmallIcon(R.drawable.ic_notif)
-                .setColor(0xFF14B8A6)
-                .setContentTitle("💳 New transaction · tap to add a category")
-                .setContentText(preview)
-                .setStyle(new Notification.BigTextStyle().bigText(preview))
-                .setAutoCancel(true)
-                .setContentIntent(pi)
-                .build();
-        nm.notify(NOTIF_ID, n);
     }
 }

@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.16'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.17'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */
@@ -247,7 +247,7 @@ const defaults = () => ({
     waterGoal: 8, glassMl: 250, budget: 0,
     focus: { work: 25, short: 5, long: 15, rounds: 4, goal: 4, autoBreak: false, autoFocus: false, sound: true, keepAwake: true },
     cycle: { name: '', len: 28, plen: 5, expected: '', notify: true, goal: 'track', fertileNotify: false, showToday: true, pill: { on: false, time: '21:00' }, tip: { on: false, time: '09:00' } },
-    notify: { tasks: true, focus: true },
+    notify: { tasks: true, focus: true, chat: true, question: true },
     sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
   },
@@ -1049,6 +1049,9 @@ function saveChatCache() {
     localStorage.setItem(CHAT_KEY, JSON.stringify({ handle: Soc.acct.handle, me: Soc.me, chats }));
   } catch (e) {}
 }
+watch(() => [S.settings.notify.chat, S.settings.notify.question], ([chat, question]) => {
+  if (Soc.acct) api('/me', { notify: { chat: chat !== false, question: question !== false } }).catch(() => {});
+});
 let chatSaveT;
 watch(() => [Soc.me, Soc.chats], () => { clearTimeout(chatSaveT); chatSaveT = setTimeout(saveChatCache, 800); }, { deep: true });
 
@@ -1422,7 +1425,7 @@ const plan = computed(() => {
     }
   }
   // Android arms the daily question as an exact local alarm (iPhone gets it as push from the server)
-  if (Native.has) for (const p of socPairs.value) {
+  if (Native.has && S.settings.notify.question !== false) for (const p of socPairs.value) {
     if (!p.type) continue;
     for (const at of OrbitSchedule.ruleTimes({ kind: 'daily', times: [p.time], days: ALL_DAYS }, Date.now(), p.tz, 7)) {
       const day = OrbitSchedule.dayKey(OrbitSchedule.localParts(at, p.tz));
@@ -1710,7 +1713,7 @@ const Check = {
 };
 
 const Sheet = {
-  props: { open: Boolean, title: String, full: Boolean },
+  props: { open: Boolean, title: String, full: Boolean, top: Boolean },
   emits: ['close'],
   setup(props, { emit }) {
     const close = () => emit('close');
@@ -1723,7 +1726,7 @@ const Sheet = {
     return { close, dy, down, move, up };
   },
   template: `<Teleport to="body"><Transition name="sheet" :duration="340">
-    <div v-if="open" class="sheet-wrap" @click.self="close">
+    <div v-if="open" class="sheet-wrap" :class="{top}" @click.self="close">
       <div class="sheet" :class="{full}" :style="dy ? {transform:'translateY('+dy+'px)', transition:'none'} : null">
         <div class="grab" @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up"><span></span></div>
         <div class="sheet-head" v-if="title || $slots.head"><h3>{{ title }}</h3><slot name="head"/></div>
@@ -1842,7 +1845,7 @@ const PickerSheet = {
     function choose(k) { if (!ok(k)) return; v.value = k; const d = parseKey(k); view.value = { y: d.getFullYear(), m: d.getMonth() }; Native.vibrate(5); }
     return { Pick, v, close, hh, mm, setT, nudge, QUICK, cells, jRange, shift, view, ok, choose, quickDays, MONTHS, WK };
   },
-  template: `<Sheet :open="!!Pick.kind" :title="Pick.title" @close="close()">
+  template: `<Sheet :open="!!Pick.kind" :title="Pick.title" top @close="close()">
     <div class="picker">
       <template v-if="Pick.kind === 'time'">
         <div class="tp-big"><button @click="nudge(-1)" aria-label="One minute earlier"><Ic n="minus" :s="18"/></button><b>{{ v }}</b><button @click="nudge(1)" aria-label="One minute later"><Ic n="plus" :s="18"/></button></div>
@@ -1861,7 +1864,7 @@ const PickerSheet = {
         </div>
         <div class="cal dp-cal">
           <div v-for="w in WK" :key="w" class="wd">{{ w }}</div>
-          <button v-for="c in cells" :key="c.k" :data-k="c.k" :class="{out: c.out, td: c.k === R.today, sel: c.k === v, off: !ok(c.k)}" :disabled="!ok(c.k)" @click="choose(c.k)">{{ c.d }}<small>{{ c.j }}</small></button>
+          <button v-for="c in cells" :key="c.k" :data-k="c.k" :class="{out: c.out, td: c.k === R.today, sel: c.k === v, off: !ok(c.k)}" :disabled="c.out || !ok(c.k)" @click="choose(c.k)">{{ c.d }}<small>{{ c.j }}</small></button>
         </div>
         <div class="muted" style="text-align:center;font-size:13.5px;font-weight:600;margin-top:10px">{{ gFull(v) }} · {{ jFull(v) }}</div>
       </template>
@@ -3791,15 +3794,17 @@ const PairView = {
     return { attachMenu, attachPhoto, attachFile, save, viewerMsg, canFile, fileSize, fileIcon, atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
+    <div class="pair-bar">
     <header class="top sm">
       <button class="icon-btn" @click="nav.screen = 'people'" aria-label="Back"><Ic n="chevron-left" :s="22"/></button>
       <span v-if="p" class="av">{{ p.with.emoji || '🙂' }}</span>
       <div class="grow" v-if="p"><h1 style="font-size:20px" translate="no">{{ nm }}</h1><div class="sub" style="margin-top:1px">{{ p.type ? REL[p.type].e + ' ' + REL[p.type].l : '@' + p.with.handle }}</div></div>
       <button v-if="p" class="icon-btn" @click="relOpen = true" aria-label="Connection settings"><Ic n="settings" :s="19"/></button>
     </header>
-    <template v-if="st && p">
-      <div class="seg pair-tabs"><button :class="{on: tab === 'q'}" @click="tab = 'q'"><Ic n="heart" :s="15"/>Daily question<span v-if="today && !today.mine" class="dot" style="background:var(--c-people)"></span></button>
+      <div v-if="st && p" class="seg pair-tabs"><button :class="{on: tab === 'q'}" @click="tab = 'q'"><Ic n="heart" :s="15"/>Daily question<span v-if="today && !today.mine" class="dot" style="background:var(--c-people)"></span></button>
         <button :class="{on: tab === 'chat'}" @click="tab = 'chat'"><Ic n="messages-square" :s="15"/>Chat<span v-if="p.unread" class="badge">{{ p.unread }}</span></button></div>
+    </div>
+    <template v-if="st && p">
 
       <template v-if="tab === 'q'">
         <div v-if="p.proposal && p.proposal.by !== meH" class="card q-card" style="margin-top:12px">
@@ -4018,6 +4023,15 @@ const NotificationsView = {
         <div class="grow"><div class="t">Focus timer</div><div class="s">When a session or break ends</div></div><Toggle v-model="S.settings.notify.focus"/></div>
       <div class="list-row"><span class="bubble" style="--c:var(--c-cycle)"><Ic n="flower-2" :s="18"/></span>
         <div class="grow"><div class="t">Cycle</div><div class="s">{{ cyc.has ? '2 days before and on the expected day' : 'Set up the cycle tracker first' }}</div></div><Toggle v-model="S.settings.cycle.notify"/></div>
+    </div>
+
+    <div class="label">People</div>
+    <div class="settings-group">
+      <div class="list-row"><span class="bubble" style="--c:var(--c-people)"><Ic n="messages-square" :s="18"/></span>
+        <div class="grow"><div class="t">Messages</div><div class="s">New messages, reactions and connection requests</div></div><Toggle v-model="S.settings.notify.chat"/></div>
+      <div class="list-row"><span class="bubble" style="--c:var(--c-people)"><Ic n="heart" :s="18"/></span>
+        <div class="grow"><div class="t">Daily question</div><div class="s">When a new question arrives and when the other person answers</div></div><Toggle v-model="S.settings.notify.question"/></div>
+      <div v-if="!Soc.acct" class="list-row"><div class="grow s muted">Create your ID in People to use these</div></div>
     </div>
 
     <div class="label">Coming up</div>

@@ -228,6 +228,17 @@ const harvest = async page => {
   assert.equal(await B.p.locator('.jump-latest').count(), 0, 'button hides at the bottom');
   A.ok('long chat opens at the end; "latest" button with a count of new messages');
 
+  // the Daily question / Chat tabs stay on screen while scrolling, so switching never needs a trip to the top
+  await B.p.evaluate(() => scrollTo(0, document.documentElement.scrollHeight / 2));
+  await B.p.waitForTimeout(300);
+  const tabsTop = await B.p.$eval('.pair-tabs', el => el.getBoundingClientRect().top);
+  assert.ok(tabsTop >= 0 && tabsTop < 200, 'tabs visible mid-chat (top ' + tabsTop + ')');
+  await B.p.click('.pair-tabs button:has-text("Daily question")');
+  await B.p.waitForSelector('.q-card');
+  await B.p.click('.pair-tabs button:has-text("Chat")');
+  await B.p.waitForTimeout(900);
+  A.ok('Daily question and Chat tabs stay reachable while scrolling');
+
   // instant open: the People list and the chat come from the phone while the server is slow or unreachable
   await B.p.waitForTimeout(1000); // let the copy be saved
   await B.p.route(API + '/**', r => r.abort());

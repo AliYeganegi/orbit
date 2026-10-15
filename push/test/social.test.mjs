@@ -148,6 +148,17 @@ try {
   assert.equal((await call('/s/p/' + pid + '/react', { body: { s: pm.data.s, emoji: '❤️' }, token: tb })).status, 404);
   console.log('✓ edit and delete own messages');
 
+  // notification choices: with message notifications off, a message still arrives in the app but sends no push
+  await call('/s/me', { body: { notify: { chat: false, question: true } }, token: tb });
+  const nq = received.length;
+  await call('/s/p/' + pid + '/send', { body: { text: 'quiet please' }, token: ta });
+  await sleep(800);
+  assert.equal(received.slice(nq).length, 0, 'no push when Messages is off');
+  const ev = (await call('/s/events?since=0', { token: tb })).data.events.reverse().find(e => e.t === 'msg' && e.m.text === 'quiet please');
+  assert.ok(ev && ev.n === null, 'the event is there, without a notification');
+  await call('/s/me', { body: { notify: { chat: true, question: true } }, token: tb });
+  console.log('✓ people notification settings');
+
   // relationship type: needs both people, and the first question comes right away
   await call('/s/p/' + pid + '/type', { body: { type: 'married' }, token: ta });
   await waitFor(() => received.find(m => /says you are Married/.test(m.title)), 'proposal push');

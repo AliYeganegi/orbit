@@ -958,3 +958,10 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 .attach-menu { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .attach-menu button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 10px; border-radius: 18px; background: var(--surface-2); }
 .attach-menu small { color: var(--muted); font-size: 12px; }
+
+.sheet-wrap.top { z-index: 150; }
+.dp-cal button.out { visibility: hidden; }
+
+/* the conversation's header and its Daily question / Chat tabs stay in reach while scrolling */
+.pair-bar { position: sticky; top: 0; z-index: 30; margin: 0 -18px; padding: env(safe-area-inset-top) 18px 8px; background: var(--bg); box-shadow: 0 8px 14px -12px rgba(0, 0, 0, .5); }
+.pair-view { padding-top: 0; }

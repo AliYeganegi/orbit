@@ -146,6 +146,7 @@ export class User extends DurableObject {
       patch.profile = { ...s.profile, ...p };
     }
     if (b.tz !== undefined && validTz(b.tz)) patch.tz = b.tz;
+    if (b.notify && typeof b.notify === 'object') patch.notify = { chat: b.notify.chat !== false, question: b.notify.question !== false };
     if (b.sub === null) await this.ctx.storage.delete('sub');
     else if (b.sub && validSubscription(b.sub, this.env)) patch.sub = b.sub;
     await this.ctx.storage.put(patch);
@@ -180,6 +181,9 @@ export class User extends DurableObject {
   async event(e) {
     const seq = ((await this.ctx.storage.get('seq')) || 0) + 1;
     const ev = { ...e, seq, at: Date.now() };
+    // the person's notification choices: the event still reaches the app, just without a notification
+    const notify = (await this.ctx.storage.get('notify')) || {};
+    if (ev.n && ((notify.chat === false && ['msg', 'react', 'req', 'conn'].includes(ev.t)) || (notify.question === false && ['q', 'ans', 'type', 'time'].includes(ev.t)))) ev.n = null;
     await this.ctx.storage.put({ seq, ['ev:' + pad(seq)]: ev });
     if (seq > MAX_EVENTS) await this.ctx.storage.delete('ev:' + pad(seq - MAX_EVENTS));
 
