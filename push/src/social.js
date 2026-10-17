@@ -25,7 +25,16 @@ const MAX_PHOTO = 1_800_000;          // per photo (the app sends ~200–500 KB 
 const MAX_PAIR_MEDIA = 400_000_000;   // per conversation
 const MAX_FILE = 15_000_000;          // any other file
 const CHUNK = 1_500_000;              // files are stored in pieces (one storage value holds at most 2 MB)
-const cleanName = n => String(n || 'file').replace(/[\u0000-\u001f\/\\<>:"|?*]+/g, '_').trim().slice(0, 120) || 'file';
+const MAX_CONNS = 50;                 // connections + pending requests per person
+const UNSENT_TTL = 3600e3;            // an upload that's never attached to a message is deleted after an hour
+const RESERVED = new Set(['orbit', 'admin', 'support', 'root', 'system', 'help', 'official', 'orbitapp']);
+const REUSE_AFTER = 30 * 864e5;       // a deleted handle can't be taken by someone else for 30 days
+const COOLDOWN = 864e5;               // after a declined or cancelled request, wait a day before asking again
+// rate limits: [count, window ms]
+const LIMITS = { send: [60, 60e3], touch: [120, 60e3], connect: [20, 864e5], upload: [100, 864e5], find: [60, 60e3], signup: [5, 3600e3] };
+// direction and invisible control characters can make a filename or name show something other than what it is
+const BIDI = /[\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c]/g;
+const cleanName = n => String(n || 'file').replace(BIDI, '').replace(/[\u0000-\u001f\/\\<>:"|?*]+/g, '_').trim().slice(0, 120) || 'file';
 const cleanMime = t => (/^[a-z]+\/[a-z0-9.+-]{1,80}$/i.test(String(t || '')) ? String(t).toLowerCase() : 'application/octet-stream');
 
 /** The image type from the file's first bytes, so nothing but real images is stored or served. */
@@ -51,7 +60,7 @@ async function sha256(text) {
 }
 
 function cleanProfile(b) {
-  const name = cleanText(b.name, 40);
+  const name = cleanText(String(b.name || '').replace(BIDI, ''), 40);
   const emoji = cleanText(b.emoji, 16) || '🙂';
   return { name, emoji, lang: b.lang === 'fa' ? 'fa' : 'en' };
 }
@@ -62,7 +71,18 @@ const label = p => p.name || '@' + p.handle;
 export const user = (env, h) => env.USER.get(env.USER.idFromName(h));
 export const pair = (env, id) => env.PAIR.get(env.PAIR.idFromName(id));
 export const registry = env => env.REGISTRY.get(env.REGISTRY.idFromName('main'));
-export { typeOf, cleanProfile, sha256, todayIn };
+export { typeOf, cleanProfile, sha256, todayIn, BIDI };
+
+/** Fixed-window counter in a Durable Object's storage. Returns false once `kind` is over its limit. */
+async function hit(storage, kind, key = '', maxOverride = 0) {
+  const [lim, win] = LIMITS[kind], max = maxOverride || lim, k = 'rl:' + kind + key, now = Date.now();
+  let c = await storage.get(k);
+  if (!c || now - c.start > win) c = { start: now, n: 0 };
+  c.n++;
+  await storage.put(k, c);
+  return c.n <= max;
+}
+const SLOW = { error: 'Too many requests. Please wait a bit and try again', status: 429 };
 
 /* ================================================================ registry */
 
@@ -80,7 +100,12 @@ export class Registry extends DurableObject {
     for (const id of pids || []) if (!(await this.ctx.storage.get('p:' + id))) await this.ctx.storage.put('p:' + id, { id, members: id.split('~'), created: now });
   }
 
-  async removeUser(h) { await this.ctx.storage.delete('u:' + h); }
+  async removeUser(h) { await this.ctx.storage.delete('u:' + h); await this.ctx.storage.put('del:' + h, Date.now()); }
+
+  /** A handle that was deleted recently stays unavailable to others for a while. */
+  async handleFree(h) { const at = await this.ctx.storage.get('del:' + h); return !at || Date.now() - at > REUSE_AFTER; }
+
+  async signupAllowed(ipHash, max) { return hit(this.ctx.storage, 'signup', ipHash, max); }
 
   async putPair(id, data) {
     const cur = (await this.ctx.storage.get('p:' + id)) || { id, members: id.split('~'), created: Date.now() };
@@ -125,6 +150,48 @@ export class User extends DurableObject {
   async authorized(token) {
     const h = await this.ctx.storage.get('tokenHash');
     return !!h && h === await sha256(token);
+  }
+
+  async allow(kind) { return hit(this.ctx.storage, kind); }
+
+  /** Replaces the login key: every phone signed in with the old one is signed out. Returns the new secret, or null for a plain sign-out. */
+  async rotate(newHash) {
+    await this.ctx.storage.put('tokenHash', newHash);
+    for (const ws of this.ctx.getWebSockets()) { try { ws.close(4001, 'signed out'); } catch { } }
+  }
+
+  async blocks() { return (await this.ctx.storage.get('blocks')) || {}; }
+  async setBlock(h, on) { const b = await this.blocks(); if (on) b[h] = Date.now(); else delete b[h]; await this.ctx.storage.put('blocks', b); return b; }
+  async blocked(h) { return !!(await this.blocks())[h]; }
+
+  async cooldown(h) { const c = (await this.ctx.storage.get('cool')) || {}; return c[h] && c[h] > Date.now() ? c[h] : 0; }
+  async setCooldown(h) { const c = (await this.ctx.storage.get('cool')) || {}, now = Date.now(); for (const k of Object.keys(c)) if (c[k] < now) delete c[k]; c[h] = now + COOLDOWN; await this.ctx.storage.put('cool', c); }
+
+  /**
+   * Removes a message's old text from this person's event history (and from notification previews), so deleted or
+   * edited messages can't be read back with /events. `m` is the message's new state; null means the whole pair is gone.
+   */
+  async scrub(pid, seq, m) {
+    const list = await this.ctx.storage.list({ prefix: 'ev:' });
+    const put = {};
+    for (const [k, ev] of list) {
+      if (ev.pair !== pid) continue;
+      let changed = false;
+      const clean = x => {
+        if (!x) return x;
+        if (m === null) { changed = true; return { s: x.s, by: x.by, at: x.at, deleted: x.deleted || Date.now() }; }
+        if (x.s === seq) { changed = true; return { ...m }; }
+        if (x.re === seq && x.rq) { changed = true; return { ...x, rq: m.deleted ? { by: x.rq.by, text: '', gone: true } : { ...x.rq, text: clip(m.text || x.rq.text, 140) } }; }
+        return x;
+      };
+      const e2 = { ...ev };
+      if (e2.m) e2.m = clean(e2.m);
+      // reactions quote the message in their notification preview ("To: …")
+      if (ev.t === 'react' && (m === null || ev.s === seq)) changed = true;
+      if (e2.n && changed) e2.n = { ...e2.n, body: '' };
+      if (changed) put[k] = e2;
+    }
+    if (Object.keys(put).length) await this.ctx.storage.put(put);
   }
 
   async profile() {
@@ -211,6 +278,8 @@ export class User extends DurableObject {
     } catch { /* a failed push must never fail the action that caused it */ }
   }
 
+  async conns() { return Object.keys((await this.ctx.storage.get('conns')) || {}).length + Object.keys((await this.ctx.storage.get('outReq')) || {}).length; }
+
   async events(since) {
     const seq = (await this.ctx.storage.get('seq')) || 0;
     const from = Math.max(since + 1, seq - MAX_EVENTS + 1, 1);
@@ -296,18 +365,27 @@ export class Pair extends DurableObject {
     };
   }
 
-  async state(h) {
-    const sum = await this.summary(h);
-    const msgs = await this.ctx.storage.list({ prefix: 'm:', reverse: true, limit: 60 });
-    return { ...sum, messages: [...msgs.values()].filter(m => !m.deleted).reverse(), days: await this.days(h) };
+  /** Up to `n` messages before `before`, skipping deleted ones without shortening the page (so "load earlier" keeps working). */
+  async page(before, n = 60) {
+    const out = [];
+    let end = before ? 'm:' + pad(before) : undefined;
+    for (let round = 0; round < 20 && out.length < n; round++) {
+      const opts = { prefix: 'm:', reverse: true, limit: 120 };
+      if (end) opts.end = end;
+      const l = [...(await this.ctx.storage.list(opts)).values()];
+      for (const m of l) if (!m.deleted && out.length < n) out.push(m);
+      if (l.length < 120) break;
+      end = 'm:' + pad(l[l.length - 1].s);
+    }
+    return out.reverse();
   }
 
-  async messages(h, before) {
-    const opts = { prefix: 'm:', reverse: true, limit: 60 };
-    if (before) opts.end = 'm:' + pad(before);
-    const msgs = await this.ctx.storage.list(opts);
-    return [...msgs.values()].filter(m => !m.deleted).reverse();
+  async state(h) {
+    const sum = await this.summary(h);
+    return { ...sum, messages: await this.page(0), days: await this.days(h) };
   }
+
+  async messages(h, before) { return this.page(before); }
 
   async days(h, before) {
     const { meta, profiles } = await this.all(['meta', 'profiles']);
@@ -320,16 +398,21 @@ export class Pair extends DurableObject {
   /** Stores a photo for a message about to be sent; only the two members can load it back. */
   /** Stores a photo or file for a message about to be sent; only the two members can load it back. */
   async upload(h, bytes, type, name) {
+    // uploads never attached to a message are cleaned up, so they don't eat the chat's space
+    const unsent = (await this.ctx.storage.get('unsent')) || {}, now = Date.now();
+    for (const [old, at] of Object.entries(unsent)) if (now - at > UNSENT_TTL) { await this.dropFile(old); delete unsent[old]; }
     const used = (await this.ctx.storage.get('fbytes')) || 0;
     if (used + bytes.byteLength > MAX_PAIR_MEDIA) return { error: 'This chat has no room for more files', status: 413 };
     const fid = b64u.encode(crypto.getRandomValues(new Uint8Array(15)));
     if (!name) { // a photo: one piece
-      await this.ctx.storage.put({ ['f:' + fid]: { by: h, type, size: bytes.byteLength, at: Date.now(), data: bytes }, fbytes: used + bytes.byteLength });
+      unsent[fid] = now;
+      await this.ctx.storage.put({ ['f:' + fid]: { by: h, type, size: bytes.byteLength, at: Date.now(), data: bytes }, fbytes: used + bytes.byteLength, unsent });
       return { fid };
     }
     const chunks = Math.ceil(bytes.byteLength / CHUNK) || 1;
     for (let i = 0; i < chunks; i++) await this.ctx.storage.put('fc:' + fid + ':' + i, bytes.slice(i * CHUNK, (i + 1) * CHUNK));
-    await this.ctx.storage.put({ ['f:' + fid]: { by: h, kind: 'file', type, name, size: bytes.byteLength, chunks, at: Date.now() }, fbytes: used + bytes.byteLength });
+    unsent[fid] = now;
+    await this.ctx.storage.put({ ['f:' + fid]: { by: h, kind: 'file', type, name, size: bytes.byteLength, chunks, at: Date.now() }, fbytes: used + bytes.byteLength, unsent });
     return { fid, name, size: bytes.byteLength, type };
   }
 
@@ -356,6 +439,14 @@ export class Pair extends DurableObject {
     if (media && typeof media.fid === 'string') {
       const f = await this.ctx.storage.get('f:' + media.fid);
       if (!f || f.by !== h) return { error: 'file not found', status: 404 };
+      if (f.sent) { // one upload, one message; a retry of the same send (same cid) gets the original back
+        const prev = f.msg && await this.ctx.storage.get('m:' + pad(f.msg));
+        if (prev && !prev.deleted && cid && prev.cid === String(cid).slice(0, 40)) return prev;
+        return { error: 'That file was already sent', status: 409 };
+      }
+      f.sent = Date.now(); f.msg = (s.mseq || 0) + 1;
+      const unsent = (await this.ctx.storage.get('unsent')) || {}; delete unsent[media.fid];
+      await this.ctx.storage.put({ ['f:' + media.fid]: f, unsent });
       photo = f.kind === 'file' ? { fid: media.fid, kind: 'file', name: f.name, size: f.size, type: f.type }
         : { fid: media.fid, width: Math.round(Number(media.width)) || 0, height: Math.round(Number(media.height)) || 0 };
     }
@@ -391,7 +482,8 @@ export class Pair extends DurableObject {
     if (!text && !m.media) return { error: 'empty' };
     m.text = text; m.edited = Date.now();
     await this.ctx.storage.put(key, m);
-    for (const x of meta.members) await this.tell(x, { t: 'edit', pair: meta.id, m });
+    await this.fixQuotes(seqNo, m);
+    for (const x of meta.members) { await user(this.env, x).scrub(meta.id, seqNo, m).catch(() => {}); await this.tell(x, { t: 'edit', pair: meta.id, m }); }
     return { ok: true, m };
   }
 
@@ -403,8 +495,20 @@ export class Pair extends DurableObject {
     if (m.media) await this.dropFile(m.media.fid);
     const gone = { s: m.s, by: m.by, at: m.at, deleted: Date.now() };
     await this.ctx.storage.put(key, gone);
-    for (const x of meta.members) await this.tell(x, { t: 'del', pair: meta.id, s: m.s });
+    await this.fixQuotes(seqNo, gone);
+    for (const x of meta.members) { await user(this.env, x).scrub(meta.id, seqNo, gone).catch(() => {}); await this.tell(x, { t: 'del', pair: meta.id, s: m.s }); }
     return { ok: true };
+  }
+
+  /** Replies keep a short copy of what they quote: update it when the original is edited, blank it when deleted. */
+  async fixQuotes(seqNo, m) {
+    const later = await this.ctx.storage.list({ prefix: 'm:', start: 'm:' + pad(seqNo + 1), limit: 2000 });
+    const put = {};
+    for (const [k, x] of later) {
+      if (x.re !== seqNo || !x.rq) continue;
+      put[k] = { ...x, rq: m.deleted ? { by: x.rq.by, text: '', gone: true } : { ...x.rq, text: clip(m.text || x.rq.text, 140) } };
+    }
+    if (Object.keys(put).length) await this.ctx.storage.put(put);
   }
 
   /** One reaction per person per message; an empty emoji removes yours. */
@@ -525,13 +629,15 @@ export class Pair extends DurableObject {
   /** Asks today's question unless it was already asked. `sched` marks the daily alarm (Android also arms that one locally). */
   /** Asks today's question unless it was already asked (or `replace`, for the admin, while nobody has answered). */
   async ask(sched, { replace = false, qid = null } = {}) {
+    // load the question bank first: a call to another object lets other requests run, so nothing may be read before it
+    const bank = await registry(this.env).bank();
     const s = await this.all(['meta', 'profiles', 'asked']);
     const meta = s.meta;
     if (!meta || !meta.type) return null;
     const day = todayIn(meta.tz);
     const existing = await this.ctx.storage.get('d:' + day);
     if (existing && !(replace && !Object.keys(existing.ans).length)) return null;
-    const all = questionsFor(meta.type, await registry(this.env).bank());
+    const all = questionsFor(meta.type, bank);
     if (!all.length) return null;
     let asked = new Set(s.asked || []);
     let q = qid ? all.find(x => x.id === qid) : null;
@@ -551,8 +657,10 @@ export class Pair extends DurableObject {
     await this.ctx.storage.put({ ['d:' + day]: d, asked: [...asked], meta });
     for (const h of meta.members) {
       const o = this.other(meta, h);
+      // one member's notification failing must not stop the other's
       await this.tell(h, { t: 'q', pair: meta.id, day, sched,
-        n: { title: L((s.profiles[h] || {}).lang, '💬 Today\'s question with ', '💬 سؤال امروز با ') + this.name(s.profiles, o), body: this.forReader(q.text, s.profiles, h, q.id, q.fa), go: 'pair:' + meta.id, tag: 'q:' + meta.id } });
+        n: { title: L((s.profiles[h] || {}).lang, '💬 Today\'s question with ', '💬 سؤال امروز با ') + this.name(s.profiles, o), body: this.forReader(q.text, s.profiles, h, q.id, q.fa), go: 'pair:' + meta.id, tag: 'q:' + meta.id } })
+        .catch(e => console.error('E_Q_NOTIFY', e && e.name));
     }
     return d;
   }
@@ -595,8 +703,8 @@ export class Pair extends DurableObject {
   }
 
   async alarm() {
-    await this.ask(true);
-    await this.reschedule();
+    // always arm tomorrow's alarm, even if asking today's question failed, or the questions would stop for good
+    try { await this.ask(true); } catch (e) { console.error('E_ASK', e && e.name); } finally { await this.reschedule(); }
   }
 
   async setProfile(h, p) {
@@ -611,6 +719,7 @@ export class Pair extends DurableObject {
     if (!meta) return { ok: true };
     for (const x of meta.members) {
       await user(this.env, x).unlink(meta.id);
+      await user(this.env, x).scrub(meta.id, 0, null).catch(() => {}); // the conversation is gone: so is its text in event history
       await user(this.env, x).event({ t: 'gone', pair: meta.id, by: h });
     }
     await this.ctx.storage.deleteAlarm();
@@ -634,13 +743,15 @@ export async function deleteAccount(env, h) {
   await registry(env).removeUser(h);
 }
 
-function parseToken(req, url) {
-  const raw = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '') || url.searchParams.get('t') || '';
+function parseToken(req, url, path) {
+  // the key in the URL is only accepted to open the live socket (browsers can't set headers there)
+  const raw = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/, '') || (path === '/ws' ? url.searchParams.get('t') : '') || '';
   const m = /^([a-z][a-z0-9_.]{2,19}):([A-Za-z0-9_-]{40,64})$/.exec(raw);
   return m ? { h: m[1], secret: m[2] } : null;
 }
 
 async function readJson(req) {
+  if (+(req.headers.get('Content-Length') || 0) > 20_000) throw new Error('too large');
   const text = await req.text();
   if (text.length > 20_000) throw new Error('too large');
   return JSON.parse(text || '{}');
@@ -655,6 +766,10 @@ export async function social(req, env, url, json, cors = {}) {
   if (path === '/signup' && req.method === 'POST') {
     const handle = String(body.handle || '').trim().toLowerCase().replace(/^@/, '');
     if (!HANDLE.test(handle)) return json({ error: 'Pick 3–20 letters, numbers, dots or underscores, starting with a letter' }, 400);
+    const ip = await sha256('ip:' + (req.headers.get('CF-Connecting-IP') || 'local'));
+    // SIGNUP_PER_HOUR exists for local test runs, which sign up many accounts from one address
+    if (!(await registry(env).signupAllowed(ip, Number(env.SIGNUP_PER_HOUR) || 0))) return json({ error: SLOW.error }, 429);
+    if (RESERVED.has(handle) || !(await registry(env).handleFree(handle))) return json({ error: 'That ID is taken' }, 409);
     const secret = b64u.encode(crypto.getRandomValues(new Uint8Array(32)));
     const ok = await user(env, handle).create(handle, cleanProfile(body), validTz(body.tz) ? body.tz : 'UTC', await sha256(secret));
     if (!ok) return json({ error: 'That ID is taken' }, 409);
@@ -662,7 +777,7 @@ export async function social(req, env, url, json, cors = {}) {
     return json({ handle, token: handle + ':' + secret });
   }
 
-  const tok = parseToken(req, url);
+  const tok = parseToken(req, url, path);
   if (!tok) return json({ error: 'unauthorized' }, 401);
   const meStub = user(env, tok.h);
   if (!(await meStub.authorized(tok.secret))) return json({ error: 'unauthorized' }, 401);
@@ -690,11 +805,35 @@ export async function social(req, env, url, json, cors = {}) {
   }
   if (path === '/events' && req.method === 'GET') return json(await meStub.events(parseInt(url.searchParams.get('since') || '0', 10) || 0));
 
+  // sign out every phone (logout), or get a new key and sign out the others (rotate)
+  if ((path === '/logout' || path === '/rotate') && req.method === 'POST') {
+    const secret = b64u.encode(crypto.getRandomValues(new Uint8Array(32)));
+    await meStub.rotate(await sha256(secret));
+    return json(path === '/rotate' ? { handle: me, token: me + ':' + secret } : { ok: true });
+  }
+
+  // blocking: a blocked person can't request, find or message you; an existing connection ends
+  if (path === '/blocks' && req.method === 'GET') return json({ blocks: Object.keys(await meStub.blocks()) });
+  if ((path === '/block' || path === '/unblock') && req.method === 'POST') {
+    const h = String(body.handle || '').trim().toLowerCase().replace(/^@/, '');
+    if (!HANDLE.test(h) || h === me) return json({ error: 'bad user' }, 400);
+    const on = path === '/block';
+    await meStub.setBlock(h, on);
+    if (on) {
+      const pid = pairId(me, h);
+      if ((await meStub.connections())[pid]) await pair(env, pid).leave(me).catch(() => {});
+      await meStub.setRequest('in', h, null); await meStub.setRequest('out', h, null);
+      await user(env, h).setRequest('out', me, null).catch(() => {}); await user(env, h).setRequest('in', me, null).catch(() => {});
+    }
+    return json({ ok: true, blocks: Object.keys(await meStub.blocks()) });
+  }
+
   if (path === '/find' && req.method === 'GET') {
+    if (!(await meStub.allow('find'))) return json({ error: SLOW.error }, 429);
     const h = String(url.searchParams.get('h') || '').trim().toLowerCase().replace(/^@/, '');
     if (!HANDLE.test(h)) return json({ error: 'not found' }, 404);
     const p = await user(env, h).profile();
-    if (!p) return json({ error: 'not found' }, 404);
+    if (!p || (await user(env, h).blocked(me))) return json({ error: 'not found' }, 404);
     const conns = await meStub.connections();
     return json({ ...p, connected: !!conns[pairId(me, h)], self: h === me });
   }
@@ -724,9 +863,15 @@ export async function social(req, env, url, json, cors = {}) {
 
     if (path === '/connect') {
       if (conns[pid]) return json({ error: 'Already connected' }, 409);
+      if (await meStub.blocked(h)) return json({ error: 'Unblock them first' }, 409);
       if (inReq[h]) return connect(); // they already asked: requesting back is accepting
       const { outReq = {} } = await meStub.requests();
       if (outReq[h]) return json({ ok: true, pending: true });
+      if (!(await meStub.allow('connect'))) return json({ error: SLOW.error }, 429);
+      if ((await meStub.conns()) >= MAX_CONNS) return json({ error: 'You have too many connections and requests' }, 409);
+      if (await meStub.cooldown(h)) return json({ error: 'You asked recently. Try again tomorrow' }, 429);
+      // someone who blocked you never hears about your request (and you aren't told you're blocked)
+      if (await themStub.blocked(me)) return json({ ok: true, pending: true });
       await meStub.setRequest('out', h, { ...them, at: Date.now() });
       await themStub.setRequest('in', me, { ...mine, at: Date.now() });
       await themStub.event({ t: 'req', from: mine, n: { title: 'New connection request', body: label(mine) + ' (@' + me + ') wants to connect', go: 'people', tag: 'req:' + me } });
@@ -734,14 +879,17 @@ export async function social(req, env, url, json, cors = {}) {
     }
     if (path === '/accept') {
       if (!inReq[h]) return json({ error: 'No request from them' }, 404);
+      if ((await meStub.conns()) >= MAX_CONNS + 10) return json({ error: 'You have too many connections' }, 409);
       return connect();
     }
     if (path === '/decline') {
       await meStub.setRequest('in', h, null); await themStub.setRequest('out', me, null);
+      await themStub.setCooldown(me);
       await themStub.event({ t: 'req-gone', with: me });
       return json({ ok: true });
     }
     await meStub.setRequest('out', h, null); await themStub.setRequest('in', me, null); // cancel
+    await meStub.setCooldown(h); // so a connect/cancel loop can't keep pinging them
     await themStub.event({ t: 'req-gone', with: me });
     return json({ ok: true });
   }
@@ -764,8 +912,10 @@ export async function social(req, env, url, json, cors = {}) {
       return new Response(f.data, { headers });
     }
     if (upload && action === 'upload') {
-      const bytes = await req.arrayBuffer();
       const named = url.searchParams.get('name'); // a file (any type) rather than a photo
+      if (+(req.headers.get('Content-Length') || 0) > (named ? MAX_FILE : MAX_PHOTO)) return json({ error: named ? 'Files can be up to 15 MB' : 'That photo is too big' }, 413);
+      if (!(await meStub.allow('upload'))) return json({ error: SLOW.error }, 429);
+      const bytes = await req.arrayBuffer();
       if (named) {
         if (bytes.byteLength > MAX_FILE) return json({ error: 'Files can be up to 15 MB' }, 413);
         if (!bytes.byteLength) return json({ error: 'That file is empty' }, 400);
@@ -783,6 +933,8 @@ export async function social(req, env, url, json, cors = {}) {
     if (action === 'messages' && req.method === 'GET') return json(await p.messages(me, parseInt(url.searchParams.get('before') || '0', 10) || 0));
     if (action === 'days' && req.method === 'GET') return json(await p.days(me, url.searchParams.get('before') || ''));
     if (req.method !== 'POST') return json({ error: 'not found' }, 404);
+    const busy = { send: 'send', react: 'touch', edit: 'touch', delete: 'touch', answer: 'touch' }[action];
+    if (busy && !(await meStub.allow(busy))) return json({ error: SLOW.error }, 429);
     if (action === 'send') {
       const text = cleanText(body.text);
       if (!text && !body.media) return json({ error: 'empty' }, 400);

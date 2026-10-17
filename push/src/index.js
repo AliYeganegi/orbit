@@ -236,7 +236,10 @@ export default {
       else return json({ error: 'not found' }, 404, h);
       return json(r.data, r.status, h);
     } catch (e) {
-      return json({ error: 'bad request' }, 400, h);
+      // bad input is the client's problem (400); anything else is ours (500), logged with a code and no personal data
+      if (e instanceof SyntaxError || /too large/.test(String(e && e.message))) return json({ error: 'bad request' }, 400, h);
+      console.error('E_SERVER', e && e.name, url.pathname.replace(/\/p\/[^/]+/, '/p/*'));
+      return json({ error: 'Something went wrong on the server. Please try again' }, 500, h);
     }
   },
 };

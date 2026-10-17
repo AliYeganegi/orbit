@@ -7,7 +7,8 @@ const assert = require('node:assert/strict');
 const URL = process.argv[2] || 'http://127.0.0.1:8766/';
 const API = process.argv[3] || 'http://127.0.0.1:8797';
 const OUT = process.argv[4];
-const PHOTO = process.env.PHOTO || require('node:path').join(require('node:os').tmpdir(), 'orbit-test-photo.png');
+// a real image to send: the app's own icon, unless PHOTO points somewhere else
+const PHOTO = process.env.PHOTO || require('node:path').join(__dirname, '../web/icon-192.png');
 
 
 // HARVEST=<file>: also log every piece of interface text on screen (for translations, see tools/i18n.py)

@@ -6,7 +6,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "node test/crypto.test.mjs && node test/flow.test.mjs && node test/social.test.mjs && node test/admin.test.mjs",
+    "test": "node test/crypto.test.mjs && node test/flow.test.mjs && node test/social.test.mjs && node test/admin.test.mjs && node test/security.test.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

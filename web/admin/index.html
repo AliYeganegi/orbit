@@ -83,7 +83,15 @@ tr.click:hover td { background: color-mix(in srgb, var(--acc) 5%, transparent); 
 <script src="../questions.js"></script>
 <script>
 const { createApp, reactive, ref, computed, watch } = Vue;
-const API = new URLSearchParams(location.search).get('api') || 'https://orbit-push.aliyeganegi.workers.dev';
+// The admin token is only ever sent to the real server. `?api=` is accepted for local testing only (localhost),
+// otherwise a crafted link could make this page send the token to someone else's server.
+const DEFAULT_API = 'https://orbit-push.aliyeganegi.workers.dev';
+const API = (() => {
+  const v = new URLSearchParams(location.search).get('api');
+  if (!v) return DEFAULT_API;
+  try { const u = new URL(v); if (/^(localhost|127\.0\.0\.1)$/.test(u.hostname) && /^https?:$/.test(u.protocol)) return u.origin; } catch (e) {}
+  return DEFAULT_API;
+})();
 const KEY = 'orbit.admin';
 const Q = window.OrbitQuestions;
 const TYPE = Object.fromEntries(Q.TYPES.map(t => [t.id, t]));

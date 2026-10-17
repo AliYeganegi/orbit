@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 const W = 'http://127.0.0.1:8795';
 const ADMIN = /^ADMIN_TOKEN=(.*)$/m.exec(readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8'))[1].replace(/^['"]|['"]$/g, '');
-const dev = spawn('npx', ['wrangler', 'dev', '--port', '8795', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const dev = spawn('npx', ['wrangler', 'dev', '--port', '8795', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const call = (path, { method, body, token, admin } = {}) => fetch(W + path, {
   method: method || (body ? 'POST' : 'GET'),
@@ -93,5 +93,5 @@ try {
   assert.ok(!ov.users.some(u => u.handle === b) && ov.users.some(u => u.handle === a));
   console.log('✓ remove a connection, delete a user');
 } finally {
-  dev.kill('SIGTERM');
+  (() => { try { process.kill(-dev.pid, 'SIGTERM'); } catch { dev.kill('SIGTERM'); } })();
 }

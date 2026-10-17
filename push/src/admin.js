@@ -55,7 +55,7 @@ export async function admin(req, env, url, json) {
     if (req.method === 'POST') {
       const p = cleanProfile({ name: body.name, emoji: body.emoji });
       if (!p.name) return json({ error: 'Name can\'t be empty' }, 400);
-      const r = await stub.update(p);
+      const r = await stub.update({ name: p.name, emoji: p.emoji }); // only what the admin edits: keeps their language
       await Promise.all(r.conns.map(id => pair(env, id).setProfile(h, r.profile).catch(() => {})));
       await reg.touchUser(h, r.profile, r.conns);
       return json({ ok: true });

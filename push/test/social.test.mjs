@@ -21,7 +21,7 @@ const push = createServer((req, res) => {
 }).listen(8796, '127.0.0.1');
 const sub = { endpoint: 'http://127.0.0.1:8796/push/sara', keys: { p256dh: Buffer.from(ua.getPublicKey()).toString('base64url'), auth: Buffer.from(auth).toString('base64url') } };
 
-const dev = spawn('npx', ['wrangler', 'dev', '--port', '8797', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const dev = spawn('npx', ['wrangler', 'dev', '--port', '8797', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const call = (path, { method, body, token } = {}) => fetch(W + path, {
   method: method || (body ? 'POST' : 'GET'), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined,
@@ -119,8 +119,12 @@ try {
   const pm = await call('/s/p/' + pid + '/send', { body: { text: 'look', media: { fid, width: 800, height: 600 } }, token: ta });
   assert.deepEqual(pm.data.media, { fid, width: 800, height: 600 });
   assert.equal((await waitFor(() => received.slice(n1).find(m => m.title === 'Ali'), 'photo push')).body, '📷 Photo: look');
-  const only = await call('/s/p/' + pid + '/send', { body: { media: { fid, width: 1, height: 1 } }, token: ta });
+  assert.equal((await call('/s/p/' + pid + '/send', { body: { media: { fid, width: 1, height: 1 } }, token: ta })).status, 409, 'one upload, one message');
+  const fid2 = (await up(jpeg, ta)).data.fid;
+  const only = await call('/s/p/' + pid + '/send', { body: { media: { fid: fid2, width: 1, height: 1 }, cid: 'c-retry' }, token: ta });
   assert.equal(only.data.text, '', 'a photo needs no caption');
+  const again = await call('/s/p/' + pid + '/send', { body: { media: { fid: fid2, width: 1, height: 1 }, cid: 'c-retry' }, token: ta });
+  assert.equal(again.data.s, only.data.s, 'a retried send returns the same message');
   assert.equal((await call('/s/p/' + pid + '/send', { body: { media: { fid: 'x'.repeat(20) } }, token: ta })).status, 404, 'unknown photo');
   const got = await fetch(W + '/s/p/' + pid + '/file/' + fid, { headers: { Authorization: 'Bearer ' + tb } });
   assert.equal(got.headers.get('content-type'), 'image/jpeg');
@@ -242,5 +246,5 @@ try {
   console.log('✓ mutual requests, account deletion');
   ws.close();
 } finally {
-  dev.kill('SIGTERM'); push.close();
+  (() => { try { process.kill(-dev.pid, 'SIGTERM'); } catch { dev.kill('SIGTERM'); } })(); push.close();
 }

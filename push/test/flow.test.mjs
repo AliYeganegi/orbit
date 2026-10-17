@@ -21,7 +21,7 @@ const push = createServer((req, res) => {
 }).listen(8798, '127.0.0.1');
 const sub = { endpoint: 'http://127.0.0.1:8798/push/abc', keys: { p256dh: Buffer.from(ua.getPublicKey()).toString('base64url'), auth: Buffer.from(auth).toString('base64url') } };
 
-const dev = spawn('npx', ['wrangler', 'dev', '--port', '8799', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const dev = spawn('npx', ['wrangler', 'dev', '--port', '8799', '--ip', '127.0.0.1', '--log-level', 'warn'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const call = (path, { method = 'POST', body, token } = {}) => fetch(W + path, {
   method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined,
@@ -116,5 +116,5 @@ try {
   assert.equal((await call('/sync', { token: tok2, body: {} })).status, 401);
   console.log('✓ unregister deletes device data');
 } finally {
-  dev.kill('SIGTERM'); push.close();
+  (() => { try { process.kill(-dev.pid, 'SIGTERM'); } catch { dev.kill('SIGTERM'); } })(); push.close();
 }
