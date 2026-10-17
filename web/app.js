@@ -680,7 +680,7 @@ setInterval(() => {
 /* money */
 const curJ = computed(() => jal(R.today));
 function monthTx(y, m) { return S.money.filter(t => { const j = jal(t.date); return j.y === y && j.m === m; }); }
-const spentThisMonth = computed(() => monthTx(curJ.value.y, curJ.value.m).filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0));
+const spentThisMonth = computed(() => sumSpend(monthTx(curJ.value.y, curJ.value.m)));
 
 /* Jalali calendar helpers for reports */
 function jToKey(y, m, d) {
@@ -701,6 +701,19 @@ function jMonthKeys(y, m) {
 }
 const jShift = (y, m, n) => { m += n; while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; } return { y, m }; };
 
+/* money rules, in one place, used by Money, Today and Reports:
+ * spending = confirmed expenses minus refunds; income excludes refunds; transfers between own accounts are neither;
+ * SMS drafts waiting for review are shown separately and only count once confirmed */
+const TRANSFER = { id: 'transfer', l: 'Transfer', e: '🔁', c: '#64748b' };
+const counted = t => !t.pending;
+const spendOf = t => (!counted(t) ? 0 : t.type === 'out' ? t.amount : t.type === 'in' && t.refund ? -t.amount : 0);
+const incomeOf = t => (counted(t) && t.type === 'in' && !t.refund ? t.amount : 0);
+const sumSpend = list => list.reduce((s, t) => s + spendOf(t), 0);
+const sumIncome = list => list.reduce((s, t) => s + incomeOf(t), 0);
+function spendByCat(list) { const m = {}; for (const t of list) { const v = spendOf(t); if (v) m[t.cat] = (m[t.cat] || 0) + v; } return m; }
+const txIcon = t => (t.type === 'transfer' ? TRANSFER : catOf(t.cat));
+const acctName = id => { const a = S.accounts.find(x => x.id === id); return a ? a.name : '?'; };
+
 /* accounts: the balance is the user's (or the bank's) number; the app only applies transactions after it */
 // when a transaction happened, for deciding whether a balance snapshot already includes it
 function txAt(t) {
@@ -710,15 +723,23 @@ function txAt(t) {
 }
 function acctBalance(a) {
   let b = a.balance || 0;
-  for (const t of S.money) if (t.acct === a.id && txAt(t) > (a.at || 0)) b += t.type === 'in' ? t.amount : -t.amount;
+  for (const t of S.money) {
+    if (txAt(t) <= (a.at || 0)) continue;
+    if (t.type === 'transfer') { if (t.acct === a.id) b -= t.amount; if (t.acct2 === a.id) b += t.amount; }
+    else if (t.acct === a.id) b += t.type === 'in' ? t.amount : -t.amount;
+  }
   return b;
 }
 const totalBalance = computed(() => S.accounts.reduce((s, a) => s + acctBalance(a), 0));
+/** The account a bank SMS belongs to. Never guesses: no bank name → none; one bank, several accounts, no number → none. */
 function acctFor(bank, card) {
+  if (!bank) return null;
   const tail = (card || '').replace(/\D/g, '').slice(-4);
-  let a = S.accounts.find(x => x.bank === bank && (x.tail || '') === tail) || (!tail && S.accounts.find(x => x.bank === bank));
-  if (!a) { a = { id: uid(), name: (bank || 'Bank') + (tail ? ' ••' + tail : ''), bank, tail, balance: 0, at: 0, src: 'sms' }; S.accounts.push(a); }
-  return a;
+  const same = S.accounts.filter(x => x.bank === bank);
+  let a = tail ? same.find(x => (x.tail || '') === tail) : same.length === 1 ? same[0] : null;
+  if (!a && tail && same.length === 1 && !same[0].tail) { a = same[0]; a.tail = tail; } // first SMS without a number, then one with it
+  if (!a && (tail || !same.length)) { a = { id: uid(), name: bank + (tail ? ' ••' + tail : ''), bank, tail, balance: 0, at: 0, src: 'sms' }; S.accounts.push(a); }
+  return a || null;
 }
 
 /* bank SMS → draft transactions (Android) */
@@ -727,20 +748,29 @@ function smsRefresh() {
   if (!AN || !AN.smsStatus) return;
   try { const st = JSON.parse(AN.smsStatus()); Sms.granted = st.granted; Sms.blocked = st.blocked; } catch (e) {}
 }
+/** A bank's balance from an SMS: applied automatically unless the person set this account's balance themselves
+ *  and the numbers disagree, in which case it's offered as a suggestion instead of silently overwriting it. */
+function applySmsBalance(a, bal, at) {
+  if (!a || bal == null || at < (a.at || 0)) return;
+  if (a.src === 'user' && Math.abs(acctBalance(a) - bal) >= 1) { a.suggest = { v: bal, at }; return; }
+  a.balance = bal; a.at = at; if (a.src !== 'user') a.src = 'sms'; delete a.suggest;
+}
 function smsImport(list) {
   const seen = new Set(S.smsSeen), added = [];
   for (const m of list) {
-    const h = OrbitSms.hash(m.sender, m.ts, m.body);
-    if (seen.has(h)) continue;
-    seen.add(h);
+    // the same message can arrive twice (live receiver and inbox scan use different clocks, or the operator resends)
+    const bh = OrbitSms.bodyHash(m.body), legacy = OrbitSms.hash(m.sender, m.ts, m.body);
+    if (seen.has(bh) || seen.has(legacy)) continue;
+    seen.add(bh);
     const p = OrbitSms.parse(m.body, { sender: m.sender, unit: S.settings.sms.unit });
     if (!p || !p.amount) continue;
     const d = new Date(m.ts);
     const a = acctFor(p.bank, p.card);
-    // the bank's "مانده" already includes this transaction, so it becomes the new balance snapshot
-    if (p.balance != null && m.ts >= (a.at || 0)) { a.balance = p.balance; a.at = m.ts; a.src = 'sms'; }
+    // the bank's "مانده" already includes this transaction; only a confident reading may move a balance
+    if (p.confident) applySmsBalance(a, p.balance, m.ts);
     const tx = { id: uid(), type: p.type, amount: p.amount, cat: '', note: '', date: keyOf(d), time: pad(d.getHours()) + ':' + pad(d.getMinutes()),
-      created: m.ts, pending: true, src: 'sms', bank: p.bank, card: p.card, balance: p.balance, sms: h, acct: a.id };
+      created: m.ts, pending: true, src: 'sms', bank: p.bank, card: p.card, balance: p.balance, sms: bh, acct: a ? a.id : '',
+      refund: !!p.refund, uncertain: !p.confident, why: p.reasons };
     S.money.unshift(tx); added.push(tx);
   }
   S.smsSeen = [...seen].slice(-1500);
@@ -787,7 +817,7 @@ const pendingTx = computed(() => S.money.filter(t => t.pending).sort((a, b) => b
 // the categories this person uses most, for one-tap categorizing
 const topCats = computed(() => {
   const n = {};
-  S.money.forEach(t => { if (t.cat && t.type === 'out') n[t.cat] = (n[t.cat] || 0) + 1; });
+  S.money.forEach(t => { if (t.cat && (t.type === 'out' || t.refund)) n[t.cat] = (n[t.cat] || 0) + 1; });
   const ranked = Object.keys(n).filter(id => catOf(id) !== UNCAT).sort((a, b) => n[b] - n[a]);
   for (const c of catsFor('out')) if (!ranked.includes(c.id)) ranked.push(c.id);
   return ranked.slice(0, 5).map(catOf);
@@ -799,7 +829,8 @@ function categorize(t, cat) {
   say('Added to ' + catOf(cat).l, () => Object.assign(t, prev));
 }
 function dismissTx(t) {
-  const i = S.money.indexOf(t); S.money.splice(i, 1);
+  const i = S.money.indexOf(t); if (i < 0) return;
+  S.money.splice(i, 1);
   say('Removed', () => S.money.splice(i, 0, t));
 }
 
@@ -2140,12 +2171,14 @@ const TxSheet = {
     const d = reactive({});
     watch(() => ui.tx, v => {
       if (!v) return;
-      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null, acct: S.accounts.length ? S.accounts[0].id : '' }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {}, v.draft || {});
+      const lastAcct = S.accounts.some(a => a.id === S.settings.lastAcct) ? S.settings.lastAcct : '';
+      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null, acct: lastAcct, acct2: '', refund: false, uncertain: false, why: [], sms: '', dup: false }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {}, v.draft || {});
       need.value = '';
     });
     Drafts.tx = () => (ui.tx ? { refId: ui.tx.ref && ui.tx.ref.id, d: JSON.parse(JSON.stringify(d)) } : null);
     const isEdit = computed(() => ui.tx && ui.tx.ref);
-    const cats = computed(() => catsFor(d.type === 'in' ? 'in' : 'out'));
+    // a refund goes back into the expense category it came from
+    const cats = computed(() => catsFor(d.type === 'in' && !d.refund ? 'in' : 'out'));
     // the person's own categories, with any emoji
     const nc = reactive({ open: false, name: '', emoji: '🍕', typed: '' });
     function newCat() { Object.assign(nc, { open: true, name: '', emoji: CAT_EMOJI[Math.floor(Math.random() * CAT_EMOJI.length)], typed: '' }); }
@@ -2164,14 +2197,15 @@ const TxSheet = {
       get: () => (d.amount ? fmt(d.amount) : ''),
       set: v => { d.amount = Math.min(parseInt(toEn(v).replace(/\D/g, '') || '0', 10), 1e13); },
     });
-    watch(() => d.type, t => { if (d.cat && !cats.value.some(c => c.id === d.cat)) d.cat = d.pending ? '' : cats.value[0].id; });
+    watch(() => [d.type, d.refund], () => { if (d.type === 'transfer') { d.cat = 'transfer'; return; } if (d.cat === 'transfer' || (d.cat && !cats.value.some(c => c.id === d.cat))) d.cat = d.pending ? '' : cats.value[0].id; });
     function bump(n) { d.amount = (d.amount || 0) + n; Native.vibrate(6); }
     async function paste() {
       const text = await readClipboard();
       const p = text && OrbitSms.parse(text, { unit: S.settings.sms.unit });
       if (!p) { say(text ? 'That doesn\'t look like a bank SMS' : 'Copy a bank SMS first, then tap paste'); return; }
-      d.type = p.type; d.amount = p.amount;
-      if (p.date && p.date.jy) d.date = jToKey(p.date.jy, p.date.jm, p.date.jd);
+      d.sms = OrbitSms.bodyHash(text); d.dup = S.smsSeen.includes(d.sms);
+      d.type = p.type; d.amount = p.amount; d.refund = !!p.refund; d.uncertain = !p.confident; d.why = p.reasons;
+      if (p.date && p.date.jy) { const k = jToKey(p.date.jy, p.date.jm, p.date.jd); if (k <= R.today && jal(k).m === p.date.jm) d.date = k; }
       if (p.time) d.time = p.time;
       d.bank = p.bank; d.card = p.card; d.balance = p.balance;
       if (!d.cat || !cats.value.some(c => c.id === d.cat)) d.cat = cats.value[0].id;
@@ -2182,28 +2216,40 @@ const TxSheet = {
     function save() {
       // say what's missing instead of greying out the button
       if (!d.amount) { need.value = 'amount'; Native.vibrate(30); return; }
-      if (!d.cat) { need.value = 'cat'; Native.vibrate(30); document.querySelector('.sheet .cat-grid') && document.querySelector('.sheet .cat-grid').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
-      const rec = { type: d.type, amount: d.amount, cat: d.cat, note: d.note.trim(), date: d.date || R.today, time: d.time || '', pending: false, bank: d.bank || '', card: d.card || '', balance: d.balance, acct: d.acct || '' };
+      if (d.type === 'transfer') {
+        if (!d.acct || !d.acct2) { need.value = 'accts'; Native.vibrate(30); return; }
+        if (d.acct === d.acct2) { need.value = 'same'; Native.vibrate(30); return; }
+      } else if (!d.cat) { need.value = 'cat'; Native.vibrate(30); document.querySelector('.sheet .cat-grid') && document.querySelector('.sheet .cat-grid').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+      if (d.date > R.today) { need.value = 'future'; Native.vibrate(30); return; }
+      const rec = { type: d.type, amount: d.amount, cat: d.type === 'transfer' ? 'transfer' : d.cat, note: d.note.trim(), date: d.date || R.today, time: d.time || '', pending: false,
+        bank: d.bank || '', card: d.card || '', balance: d.balance, acct: d.acct || '', acct2: d.type === 'transfer' ? d.acct2 : '', refund: d.type === 'in' && !!d.refund, uncertain: false };
       if (isEdit.value) Object.assign(ui.tx.ref, rec);
-      else S.money.unshift({ id: uid(), created: Date.now(), ...rec });
-      say(isEdit.value ? 'Saved' : (d.type === 'in' ? 'Income' : 'Expense') + ' added');
+      else S.money.unshift({ id: uid(), created: Date.now(), ...rec, sms: d.sms || '' });
+      if (d.sms && !S.smsSeen.includes(d.sms)) S.smsSeen.push(d.sms);
+      if (d.acct) S.settings.lastAcct = d.acct;
+      say(isEdit.value ? 'Saved' : d.type === 'transfer' ? 'Transfer added' : d.refund ? 'Refund added' : (d.type === 'in' ? 'Income' : 'Expense') + ' added');
       Native.vibrate(12);
       ui.tx = null;
     }
     function remove() {
       const t = ui.tx.ref; ui.tx = null;
-      const i = S.money.indexOf(t); S.money.splice(i, 1);
+      const i = S.money.indexOf(t); if (i < 0) return;
+      S.money.splice(i, 1);
       say('Transaction deleted', () => S.money.splice(i, 0, t));
     }
-    watch(() => [d.amount, d.cat], () => { need.value = ''; });
+    watch(() => [d.amount, d.cat, d.acct, d.acct2, d.date], () => { need.value = ''; });
     return { d, amt, cats, save, remove, isEdit, bump, paste, need, nc, newCat, addCat, delCat, mine, CAT_EMOJI };
   },
   template: `<Sheet :open="!!ui.tx" :title="d.pending ? 'Add details' : isEdit ? 'Edit transaction' : 'New transaction'" @close="ui.tx = null">
     <div :style="{'--acc': d.type === 'in' ? 'var(--c-habits)' : 'var(--c-money)'}">
       <div v-if="d.pending || d.bank" class="hint" style="margin:0 0 14px"><Ic n="message-square-text" :s="16"/><span class="grow">From {{ d.bank ? d.bank + ' ' : '' }}SMS{{ d.time ? ' at ' + d.time : '' }}{{ d.card ? ' · ' + d.card : '' }}{{ d.balance != null ? ' · balance ' + short(d.balance) : '' }}</span></div>
       <button v-else-if="!isEdit" class="btn block sm" style="margin-bottom:14px" @click="paste"><Ic n="clipboard-paste" :s="16"/>Paste a bank SMS</button>
-      <div class="seg"><button :class="{on: d.type==='out'}" @click="d.type='out'"><Ic n="arrow-up-right" :s="16"/>Expense</button>
-        <button :class="{on: d.type==='in'}" @click="d.type='in'"><Ic n="arrow-down-left" :s="16"/>Income</button></div>
+      <div v-if="d.dup" class="hint warn" style="margin:0 0 12px"><Ic n="circle-alert" :s="16"/><span class="grow">This SMS looks like it was already added. Check your transactions before saving it again.</span></div>
+      <div v-if="d.uncertain && d.why && d.why.length" class="hint warn" style="margin:0 0 12px"><Ic n="circle-alert" :s="16"/><span class="grow">Check this one: {{ d.why.join(', ') }}. Fix anything that's wrong before saving.</span></div>
+      <div class="seg"><button :class="{on: d.type==='out'}" @click="d.type='out'; d.refund = false"><Ic n="arrow-up-right" :s="16"/>Expense</button>
+        <button :class="{on: d.type==='in'}" @click="d.type='in'"><Ic n="arrow-down-left" :s="16"/>Income</button>
+        <button :class="{on: d.type==='transfer'}" @click="d.type='transfer'; d.refund = false"><Ic n="repeat" :s="16"/>Transfer</button></div>
+      <label v-if="d.type === 'in'" class="list-row" style="border:0;padding:12px 2px 0"><div class="grow"><div class="t">This is a refund</div><div class="s">Money back for something you bought: it reduces that category's spending instead of counting as income</div></div><Toggle v-model="d.refund"/></label>
       <div class="amount-in">
         <input v-model="amt" inputmode="numeric" placeholder="0" enterkeyhint="done" @keydown.enter="$event.target.blur()">
         <div class="u">{{ d.amount ? words(d.amount) : 'Toman' }}</div>
@@ -2212,6 +2258,18 @@ const TxSheet = {
         <button class="chip" v-for="n in [50000, 100000, 500000, 1000000]" :key="n" @click="bump(n)">+{{ short(n) }}</button>
       </div>
       <div v-if="need === 'amount'" class="hint warn"><span class="grow">Enter an amount to save</span></div>
+      <template v-if="d.type === 'transfer'">
+        <div v-if="S.accounts.length < 2" class="hint warn"><span class="grow">Add at least two accounts (Money → Balance) to move money between them.</span><button class="btn sm" @click="ui.tx = null; ui.accounts = true">Accounts</button></div>
+        <template v-else>
+          <span class="flabel">From</span>
+          <div class="chips"><button v-for="a in S.accounts" :key="a.id" class="chip" :class="{on: d.acct === a.id}" @click="d.acct = a.id" translate="no">{{ a.name }}</button></div>
+          <span class="flabel">To</span>
+          <div class="chips"><button v-for="a in S.accounts" :key="a.id" class="chip" :class="{on: d.acct2 === a.id}" :disabled="a.id === d.acct" @click="d.acct2 = a.id" translate="no">{{ a.name }}</button></div>
+          <div v-if="need === 'accts' || need === 'same'" class="hint warn"><span class="grow">{{ need === 'same' ? 'Pick two different accounts' : 'Pick both accounts' }}</span></div>
+          <p class="muted" style="font-size:12.5px;margin-top:8px">Transfers move money between your own accounts. They don't count as spending or income.</p>
+        </template>
+      </template>
+      <template v-else>
       <span class="flabel">Category</span>
       <div v-if="need === 'cat'" class="hint warn" style="margin:0 0 10px"><span class="grow">Choose a category to save</span></div>
       <div class="cat-grid" :class="{shake: need === 'cat'}">
@@ -2226,7 +2284,8 @@ const TxSheet = {
           <span v-for="c in mine" :key="c.id" class="chip">{{ c.e }} {{ c.l }}<button @click="delCat(c)" :aria-label="'Delete ' + c.l" style="display:grid;margin-left:2px"><Ic n="x" :s="13"/></button></span></div>
         <div class="btn-row" style="margin-top:12px"><button class="btn" @click="nc.open = false">Cancel</button><button class="btn primary" :disabled="!nc.name.trim()" @click="addCat">Add category</button></div>
       </div>
-      <template v-if="S.accounts.length">
+      </template>
+      <template v-if="S.accounts.length && d.type !== 'transfer'">
         <span class="flabel">Account</span>
         <div class="chips"><button v-for="a in S.accounts" :key="a.id" class="chip" :class="{on: d.acct === a.id}" @click="d.acct = a.id" translate="no">{{ a.name }}</button>
           <button class="chip" :class="{on: !d.acct}" @click="d.acct = ''">None</button></div>
@@ -2235,6 +2294,7 @@ const TxSheet = {
       <input class="field" v-model="d.note" placeholder="e.g. Lunch with Sara" enterkeyhint="done">
       <span class="flabel">Date</span>
       <DatePick v-model="d.date" :none="false" past/>
+      <div v-if="need === 'future'" class="hint warn"><span class="grow">The date can't be in the future</span></div>
       <div class="btn-row">
         <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
         <button class="btn primary" @click="save">{{ d.pending ? 'Save' : isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
@@ -2271,7 +2331,8 @@ const AccountsSheet = {
         <div class="settings-group" style="box-shadow:none">
           <button v-for="a in S.accounts" :key="a.id" class="list-row" style="width:100%;text-align:left" @click="open(a)">
             <span class="bubble" style="--c:var(--c-money)"><Ic n="wallet" :s="18"/></span>
-            <div class="grow"><div class="t" translate="no">{{ a.name }}</div><div class="s">{{ a.at ? (a.src === 'sms' ? 'Updated from bank SMS ' : 'Set by you ') + ago(a.at).toLowerCase() : 'Tap to set the balance' }}</div></div>
+            <div class="grow"><div class="t" translate="no">{{ a.name }}</div><div class="s">{{ a.at ? (a.src === 'sms' ? 'Updated from bank SMS ' : 'Set by you ') + ago(a.at).toLowerCase() : 'Tap to set the balance' }}</div>
+              <div v-if="a.suggest" class="suggest" @click.stop>Bank SMS says {{ fmt(a.suggest.v) }} <button class="btn sm" @click="a.balance = a.suggest.v; a.at = a.suggest.at; delete a.suggest; say('Balance updated from the bank')">Use it</button><button class="btn sm" @click="delete a.suggest">Ignore</button></div></div>
             <b style="white-space:nowrap">{{ fmt(acctBalance(a)) }}</b><Ic n="pencil" :s="15" class="muted"/></button>
           <div v-if="!S.accounts.length" class="list-row"><div class="grow muted" style="font-size:14px">No accounts yet. Add one to track your real balance.</div></div>
         </div>
@@ -2756,25 +2817,38 @@ const MoneyView = {
     const ym = ref({ y: curJ.value.y, m: curJ.value.m });
     const shift = n => { let { y, m } = ym.value; m += n; if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; } ym.value = { y, m }; };
     const isCur = computed(() => ym.value.y === curJ.value.y && ym.value.m === curJ.value.m);
-    const txs = computed(() => monthTx(ym.value.y, ym.value.m).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.created - a.created)));
-    const spent = computed(() => txs.value.filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0));
-    const income = computed(() => txs.value.filter(t => t.type === 'in').reduce((s, t) => s + t.amount, 0));
+    const byDate = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.created - a.created);
+    const txs = computed(() => monthTx(ym.value.y, ym.value.m).sort(byDate));
+    const spent = computed(() => sumSpend(txs.value));
+    const income = computed(() => sumIncome(txs.value));
+    const unreviewed = computed(() => txs.value.filter(t => t.pending && t.type === 'out').reduce((s, t) => s + t.amount, 0));
     const cats = computed(() => {
-      const m = {};
-      txs.value.filter(t => t.type === 'out').forEach(t => { m[t.cat] = (m[t.cat] || 0) + t.amount; });
-      return Object.entries(m).map(([id, v]) => ({ ...catOf(id), id, v, n: txs.value.filter(t => t.cat === id).length, p: spent.value ? v / spent.value : 0 })).sort((a, b) => b.v - a.v);
+      const m = spendByCat(txs.value);
+      return Object.entries(m).filter(([, v]) => v > 0).map(([id, v]) => ({ ...catOf(id), id, v, n: txs.value.filter(t => t.cat === id && counted(t)).length, p: spent.value ? v / spent.value : 0 })).sort((a, b) => b.v - a.v);
     });
+    // search looks through every month; the filter chips narrow the list
+    const q = ref(''), kind = ref('all');
+    const KINDS = [{ id: 'all', l: 'All' }, { id: 'out', l: 'Expenses' }, { id: 'in', l: 'Income' }, { id: 'transfer', l: 'Transfers' }, { id: 'review', l: 'To review' }];
+    const matchKind = t => kind.value === 'all' || (kind.value === 'review' ? t.pending : kind.value === 'in' ? t.type === 'in' : t.type === kind.value);
+    const matchQ = t => {
+      const x = toEn(q.value).trim().toLowerCase(); if (!x) return true;
+      const digits = x.replace(/[,\s]/g, '');
+      return [t.note, txIcon(t).l, t.bank, t.type === 'transfer' ? acctName(t.acct) + ' ' + acctName(t.acct2) : acctName(t.acct)].some(v => (v || '').toLowerCase().includes(x))
+        || (/^\d{3,}$/.test(digits) && String(t.amount).includes(digits));
+    };
+    const searching = computed(() => !!q.value.trim());
+    const shown = computed(() => (searching.value ? [...S.money].sort(byDate) : txs.value).filter(t => matchKind(t) && matchQ(t)));
     const days = computed(() => {
       const by = {};
-      txs.value.forEach(t => (by[t.date] = by[t.date] || []).push(t));
-      return Object.keys(by).sort().reverse().map(k => ({ k, items: by[k], out: by[k].filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0) }));
+      shown.value.forEach(t => (by[t.date] = by[t.date] || []).push(t));
+      return Object.keys(by).sort().reverse().map(k => ({ k, items: by[k], out: sumSpend(by[k]) }));
     });
     const budget = computed(() => S.settings.budget);
-    function del(t) { const i = S.money.indexOf(t); S.money.splice(i, 1); say('Transaction deleted', () => S.money.splice(i, 0, t)); }
+    function del(t) { const i = S.money.indexOf(t); if (i < 0) return; S.money.splice(i, 1); say('Transaction deleted', () => S.money.splice(i, 0, t)); }
     const showAll = ref(false);
     const review = computed(() => (showAll.value ? pendingTx.value : pendingTx.value.slice(0, 3)));
     const smsOffer = computed(() => Native.has && !S.settings.sms.on && !S.settings.sms.dismissed);
-    return { ym, shift, isCur, spent, income, cats, days, budget, del, showAll, review, smsOffer };
+    return { ym, shift, isCur, spent, income, unreviewed, cats, days, budget, del, showAll, review, smsOffer, q, kind, KINDS, searching, shown };
   },
   template: `<div class="view" style="--acc:var(--c-money)">
     <header class="top"><div class="grow"><h1>Money</h1><div class="sub">Spending in Toman</div></div>
@@ -2792,11 +2866,12 @@ const MoneyView = {
         <div v-for="t in review" :key="t.id" class="rv">
           <div class="rv-top tap" @click="ui.tx = {ref: t}">
             <div class="grow"><b :class="{in: t.type === 'in'}">{{ t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }} <small>T</small></b>
+              <span v-if="t.refund" class="badge rv-tag">Refund</span><span v-if="t.uncertain" class="badge rv-tag warn" :title="(t.why || []).join(', ')">Check this</span>
               <div class="s">{{ t.bank || 'Bank' }}{{ t.card ? ' ••' + t.card.replace(/\D/g, '').slice(-4) : '' }} · {{ rel(t.date) }} {{ t.time }}</div></div>
             <button class="icon-btn plain" @click.stop="dismissTx(t)" aria-label="Not a real transaction"><Ic n="x" :s="17"/></button>
           </div>
           <div class="chips scroll" style="margin:8px -16px 0;padding:2px 16px">
-            <template v-if="t.type === 'out'"><button v-for="c in topCats" :key="c.id" class="chip" @click="categorize(t, c.id)">{{ c.e }} {{ c.l }}</button></template>
+            <template v-if="t.type === 'out' || t.refund"><button v-for="c in topCats" :key="c.id" class="chip" @click="categorize(t, c.id)">{{ c.e }} {{ c.l }}</button></template>
             <template v-else><button v-for="c in catsFor('in')" :key="c.id" class="chip" @click="categorize(t, c.id)">{{ c.e }} {{ c.l }}</button></template>
             <button class="chip" @click="ui.tx = {ref: t}">More…</button>
           </div>
@@ -2813,6 +2888,7 @@ const MoneyView = {
     <div class="card money-hero">
       <div class="k">Spent</div>
       <div class="amt">{{ fmt(spent) }}<small>T</small></div>
+      <div v-if="unreviewed" class="unrev">+ {{ short(unreviewed) }} waiting for review</div>
       <button v-if="budget" class="budget-line" @click="ui.budget = true">
         <div class="bar"><i :style="{width: Math.min(100, spent / budget * 100) + '%', background: spent > budget ? '#ffd1d1' : ''}"></i></div>
         <div class="bl">{{ spent > budget ? short(spent - budget) + ' over budget' : short(budget - spent) + ' left of ' + short(budget) + ' budget' }}<Ic n="pencil" :s="12"/></div>
@@ -2837,19 +2913,24 @@ const MoneyView = {
         <div class="v">{{ short(c.v) }}<small>{{ Math.round(c.p * 100) }}%</small></div>
       </div>
     </div>
+    <div class="search" style="margin-top:4px"><Ic n="search" :s="18"/><input v-model="q" placeholder="Search notes, categories, amounts"><button v-if="q" @click="q=''" aria-label="Clear search"><Ic n="x" :s="16"/></button></div>
+    <div class="chips scroll" style="margin-top:-4px;margin-bottom:6px"><button v-for="k in KINDS" :key="k.id" class="chip" :class="{on: kind === k.id}" @click="kind = k.id">{{ k.l }}</button></div>
+    <div v-if="searching" class="muted" style="font-size:12.5px;margin:2px 4px 6px">{{ shown.length }} found in all months</div>
     <template v-if="days.length">
       <div v-for="g in days" :key="g.k">
         <div class="tx-day"><span>{{ rel(g.k) }} · {{ jLabel(g.k) }}</span><span v-if="g.out">−{{ short(g.out) }}</span></div>
         <TransitionGroup name="list" tag="div" class="tlist rel">
           <Swipe v-for="t in g.items" :key="t.id" @remove="del(t)" @tap="ui.tx = {ref: t}">
-            <div class="tx"><div class="e">{{ catOf(t.cat).e }}</div>
-              <div class="n">{{ catOf(t.cat).l }}<small v-if="t.note || t.bank">{{ t.note || t.bank + (t.time ? ' · ' + t.time : '') }}</small></div>
-              <div class="v" :class="{in: t.type === 'in'}">{{ t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }}</div></div>
+            <div class="tx" :class="{pend: t.pending}"><div class="e">{{ txIcon(t).e }}</div>
+              <div class="n">{{ t.type === 'transfer' ? acctName(t.acct) + ' → ' + acctName(t.acct2) : txIcon(t).l }}<span v-if="t.refund" class="badge rv-tag">Refund</span><span v-if="t.pending" class="badge rv-tag warn">To review</span>
+                <small v-if="t.note || t.bank">{{ t.note || t.bank + (t.time ? ' · ' + t.time : '') }}</small></div>
+              <div class="v" :class="{in: t.type === 'in', tr: t.type === 'transfer'}">{{ t.type === 'transfer' ? '' : t.type === 'in' ? '+' : '−' }}{{ fmt(t.amount) }}</div></div>
           </Swipe>
         </TransitionGroup>
       </div>
     </template>
     <p v-if="days.length" class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">Tap a transaction to edit it · swipe left to delete</p>
+    <Empty v-else-if="searching || kind !== 'all'" e="🔎" t="Nothing matches" s="Try another word, or clear the filter."/>
     <Empty v-else e="💸" t="No transactions yet" :s="'Nothing logged for ' + JM[ym.m - 1] + '. Tap + to add one.'"/>
     <button class="fab" @click="ui.tx = {}" aria-label="New transaction"><Ic n="plus" :s="26" :w="2.4"/></button>
   </div>`,
@@ -4307,11 +4388,11 @@ const ReportsView = {
     const txs = computed(() => S.money.filter(t => inPeriod(t, ym.value.y, ym.value.m)));
     const prevYm = computed(() => (mode.value === 'month' ? jShift(ym.value.y, ym.value.m, -1) : { y: ym.value.y - 1, m: 1 }));
     const prevTx = computed(() => S.money.filter(t => inPeriod(t, prevYm.value.y, prevYm.value.m)));
-    const sum = (list, type) => list.filter(t => t.type === type).reduce((s, t) => s + t.amount, 0);
-    const out = computed(() => txs.value.filter(t => t.type === 'out'));
-    const spent = computed(() => sum(txs.value, 'out'));
-    const income = computed(() => sum(txs.value, 'in'));
-    const prevSpent = computed(() => sum(prevTx.value, 'out'));
+    // confirmed expenses; refunds are netted in by sumSpend/spendByCat, transfers and unreviewed drafts are left out
+    const out = computed(() => txs.value.filter(t => counted(t) && t.type === 'out'));
+    const spent = computed(() => sumSpend(txs.value));
+    const income = computed(() => sumIncome(txs.value));
+    const prevSpent = computed(() => sumSpend(prevTx.value));
     const change = computed(() => (prevSpent.value ? (spent.value - prevSpent.value) / prevSpent.value : null));
     const keys = computed(() => (mode.value === 'month' ? jMonthKeys(ym.value.y, ym.value.m) : null));
     const daysElapsed = computed(() => {
@@ -4333,26 +4414,24 @@ const ReportsView = {
     const trend = computed(() => {
       if (mode.value === 'month') {
         return keys.value.map((k, i) => {
-          const v = out.value.filter(t => t.date === k).reduce((s, t) => s + t.amount, 0);
+          const v = Math.max(0, sumSpend(txs.value.filter(t => t.date === k)));
           return { l: (i + 1) % 5 === 0 || i === 0 ? String(i + 1) : '', v, hl: k === R.today };
         });
       }
       return Array.from({ length: 12 }, (_, i) => {
-        const v = out.value.filter(t => jal(t.date).m === i + 1).reduce((s, t) => s + t.amount, 0);
+        const v = Math.max(0, sumSpend(txs.value.filter(t => jal(t.date).m === i + 1)));
         return { l: JM[i].slice(0, 3), v, hl: isCur.value && i + 1 === curJ.value.m, show: true };
       });
     });
     const months6 = computed(() => Array.from({ length: 6 }, (_, i) => {
       const { y, m } = jShift(ym.value.y, mode.value === 'month' ? ym.value.m : 12, i - 5);
       const list = S.money.filter(t => { const j = jal(t.date); return j.y === y && j.m === m; });
-      return { l: JM[m - 1].slice(0, 3), v: sum(list, 'out'), v2: sum(list, 'in'), hl: y === ym.value.y && m === ym.value.m };
+      return { l: JM[m - 1].slice(0, 3), v: Math.max(0, sumSpend(list)), v2: sumIncome(list), hl: y === ym.value.y && m === ym.value.m };
     }));
 
     const cats = computed(() => {
-      const cur = {}, prev = {};
-      out.value.forEach(t => { cur[t.cat] = (cur[t.cat] || 0) + t.amount; });
-      prevTx.value.filter(t => t.type === 'out').forEach(t => { prev[t.cat] = (prev[t.cat] || 0) + t.amount; });
-      return Object.entries(cur).map(([id, v]) => ({ ...catOf(id), id, v, p: spent.value ? v / spent.value : 0, n: out.value.filter(t => t.cat === id).length,
+      const cur = spendByCat(txs.value), prev = spendByCat(prevTx.value);
+      return Object.entries(cur).filter(([, v]) => v > 0).map(([id, v]) => ({ ...catOf(id), id, v, p: spent.value ? v / spent.value : 0, n: out.value.filter(t => t.cat === id).length,
         ch: prev[id] ? (v - prev[id]) / prev[id] : null })).sort((a, b) => b.v - a.v);
     });
     const weekday = computed(() => {
@@ -4403,9 +4482,14 @@ const ReportsView = {
       return list;
     });
     function exportCsv() {
-      const rows = [['Date', 'Shamsi date', 'Time', 'Type', 'Amount (Toman)', 'Category', 'Note', 'Bank']];
-      [...txs.value].sort((a, b) => (a.date < b.date ? -1 : 1)).forEach(t => rows.push([t.date, jFull(t.date), t.time || '', t.type === 'in' ? 'Income' : 'Expense', t.amount, catOf(t.cat).l, t.note || '', t.bank || '']));
-      Native.share(rows.map(r => r.map(v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : v).join(',')).join('\n'));
+      const rows = [['Date', 'Shamsi date', 'Time', 'Type', 'Amount (Toman)', 'Category', 'Account', 'Note', 'Bank', 'Status']];
+      const typeOf = t => (t.type === 'transfer' ? 'Transfer' : t.refund ? 'Refund' : t.type === 'in' ? 'Income' : 'Expense');
+      [...txs.value].sort((a, b) => (a.date < b.date ? -1 : 1)).forEach(t => rows.push([t.date, jFull(t.date), t.time || '', typeOf(t), t.amount, txIcon(t).l,
+        t.type === 'transfer' ? acctName(t.acct) + ' → ' + acctName(t.acct2) : t.acct ? acctName(t.acct) : '', t.note || '', t.bank || '', t.pending ? 'To review' : '']));
+      // text that a spreadsheet would run as a formula (=, +, -, @) is prefixed with ' so it stays text
+      const cell = v => { let x = String(v); if (typeof v === 'string' && /^[=+\-@\t\r]/.test(x)) x = "'" + x; return /[",\r\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+      const csv = '\uFEFF' + rows.map(r => r.map(cell).join(',')).join('\r\n'); // BOM so Excel shows Persian correctly
+      Native.shareFile('orbit-money-' + (mode.value === 'month' ? ym.value.y + '-' + pad(ym.value.m) : ym.value.y) + '.csv', 'text/csv', csv);
     }
     const pct = v => (v >= 0 ? '+' : '−') + Math.round(Math.abs(v) * 100) + '%';
     return { mode, ym, shift, isCur, spent, income, change, perDay, savedRate, pace, trend, months6, cats, weekday, timeOfDay, top, places, insights, exportCsv, pct, out, prevYm, daysElapsed };
@@ -4920,7 +5004,7 @@ Object.assign(app.config.globalProperties, {
   Store, storeExport, storeDismiss, APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   pickTime, pickDate, go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
   setLang, tr, FA, qText, Soc, REL, whoName, Upd, installUpdate, dismissUpdate, AN,
-  remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, catsFor, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, taskPassed, habitDue, toggleHabit, streak, addWater, setMood, togglePeriodDay,
+  txIcon, acctName, remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, catsFor, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, taskPassed, habitDue, toggleHabit, streak, addWater, setMood, togglePeriodDay,
 });
 // computed refs on globalProperties are not auto-unwrapped, so expose them as live getters
 const live = { dueToday, updAvail, socTodo, socPairs, waterRem, totalBalance, cycStats, pendingTx, topCats, focusStreak, waterToday, focusToday, spentThisMonth, curJ, cyc, cdSorted, plan, waterNext, remReady };
