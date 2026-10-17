@@ -8,6 +8,9 @@ SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
 BT="$SDK/build-tools/34.0.0"
 JAR="$SDK/platforms/android-34/android.jar"
 VERSION_CODE="${VERSION_CODE:-1}"
+# The installed id. 1.21 moved from me.ali.orbit to me.ali.orbitapp: the original signing key was lost, and Android only
+# updates an app signed with the same key, so the new app installs next to the old one and data moves over by backup.
+APP_ID="${APP_ID:-me.ali.orbitapp}"
 VERSION_NAME="${VERSION_NAME:-$(grep -oP "const APP_VERSION = '\K[^']+" ../web/app.js)}"
 # DEBUG=1 makes the WebView inspectable over adb (chrome://inspect); never ship it
 
@@ -18,7 +21,7 @@ rm -f build/assets/www/sw.js build/assets/www/manifest.webmanifest build/assets/
 rm -rf build/assets/www/admin # the admin panel is web only
 "$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -I "$JAR" --manifest AndroidManifest.xml -A build/assets build/res.zip \
-  --java build/gen --min-sdk-version 26 --target-sdk-version 34 \
+  --java build/gen --rename-manifest-package "$APP_ID" --min-sdk-version 26 --target-sdk-version 34 \
   --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" ${DEBUG:+--debug-mode} -o build/unsigned.apk
 javac -nowarn -Xlint:-options -source 8 -target 8 -bootclasspath "$JAR" -classpath "$BT/core-lambda-stubs.jar" -d build/classes \
   $(find src build/gen -name '*.java')

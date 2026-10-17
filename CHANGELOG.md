@@ -1,6 +1,12 @@
 # Changelog
 
-## 1.21 (web + server; Android APK pending the signing key)
+## 1.21
+
+### Moving to the new Android app
+The key that signed Android versions up to 1.20 was lost, and Android only updates an app signed with the same key.
+1.21 is therefore a new app (`me.ali.orbitapp`) that installs next to the old one: export a backup in the old app,
+restore it in the new one, then uninstall the old app. Screen updates are now signed with a new update key, so the
+old app stays on 1.20.
 
 Not deployed yet: the iPhone/web version updates when `main` is pushed, the People server when `push/` is deployed,
 and the Android APK needs the original signing key (see "Release blockers" in `docs/REPORT.md`).

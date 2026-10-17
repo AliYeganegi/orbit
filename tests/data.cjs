@@ -105,6 +105,24 @@ const URL = process.argv[2] || 'http://127.0.0.1:8766/';
   assert.equal(await p.evaluate(() => document.querySelector('.sheet .field-title') && document.querySelector('.sheet .field-title').value), 'Half-typed task');
   ok('task editor reopens with its text after an update reload');
 
+  // 10. moving from the old Android app (1.20 export: { app, v: 1, data: <whole state> }) restores everything
+  const old = { app: 'orbit', v: 1, at: '2026-10-01T10:00:00Z', data: {
+    settings: { onboarded: true, name: 'Old', lang: 'en', waterGoal: 10, budget: 5000000, sms: { on: true, unit: 'rial', last: 5, since: 1 } },
+    tasks: [{ id: 'o1', title: 'From old phone', done: false, created: 1 }], habits: [{ id: 'oh', name: 'Walk', emoji: '🚶', color: '#22c55e', log: { '2026-09-30': true }, created: 1 }],
+    notes: [{ id: 'on', title: 'Old note', body: 'kept', updated: 1 }], money: [{ id: 'om', type: 'out', amount: 50000, cat: 'food', note: '', date: '2026-09-30', created: 1 }],
+    accounts: [{ id: 'oa', name: 'Pasargad', bank: 'Pasargad', tail: '1234', balance: 900000, at: 1, src: 'sms' }], smsSeen: ['abc'], reminders: [], countdowns: [],
+    cycleDays: ['2026-09-20'], cycleLog: {}, water: { '2026-09-30': 6 }, mood: {}, focusLog: {}, customCats: [] } };
+  await boot({ settings: { onboarded: true } });
+  await p.evaluate(() => { nav.screen = 'settings'; }); await p.waitForTimeout(400);
+  await p.click('text=Restore backup'); await p.waitForTimeout(400);
+  await p.fill('.sheet textarea', JSON.stringify(old));
+  await p.click('text=Check backup'); await p.waitForTimeout(300);
+  await p.click('text=Replace with backup'); await p.waitForTimeout(400);
+  const r10 = await p.evaluate(() => ({ name: S.settings.name, goal: S.settings.waterGoal, tasks: S.tasks.map(t => t.title), habit: S.habits[0] && S.habits[0].log['2026-09-30'],
+    note: S.notes[0] && S.notes[0].body, money: S.money.length, acct: S.accounts[0] && S.accounts[0].balance, seen: S.smsSeen.length, cycle: S.cycleDays.length, water: S.water['2026-09-30'] }));
+  assert.deepEqual(r10, { name: 'Old', goal: 10, tasks: ['From old phone'], habit: true, note: 'kept', money: 1, acct: 900000, seen: 1, cycle: 1, water: 6 });
+  ok('a backup exported by the old 1.20 app restores everything into the new app');
+
   assert.deepEqual(errs, [], 'no page errors: ' + errs.join(' | '));
   await b.close();
   console.log('ALL GOOD');

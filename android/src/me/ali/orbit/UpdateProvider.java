@@ -16,7 +16,7 @@ import java.io.FileNotFoundException;
  * and files the person exports (backups, CSV) at content://…/shared/<name>, written to the cache just before sharing.
  */
 public class UpdateProvider extends ContentProvider {
-    static final String AUTHORITY = "me.ali.orbit.updates";
+    static final String AUTHORITY = "me.ali.orbitapp.files"; // must match AndroidManifest.xml and be unique on the phone
 
     private File apk() {
         return new File(new File(getContext().getFilesDir(), "updates"), "orbit.apk");

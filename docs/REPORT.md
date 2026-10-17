@@ -3,7 +3,7 @@
 Scope: the "Orbit app upgrade" brief (audit, phases 1–3, phase 4 documented). Audit: `docs/AUDIT.md`. Changes:
 `CHANGELOG.md`. Server API: `docs/API.md`. Phase 4 designs: `docs/PHASE4.md`.
 
-Everything is committed locally on `main` (7 commits ahead of `origin/main`). **Nothing has been pushed or deployed.**
+Everything is committed on `main`. Deploy status is in the final message of the session.
 
 ## Status
 
@@ -43,15 +43,13 @@ but none of this has run on Android yet:
 
 Shared memories, insights, calendar, voice capture: `docs/PHASE4.md`.
 
-### Blocked
+### Resolved: Android signing
 
-- **Android release.** The published APKs are signed with certificate `a309d322…bec0`; this machine only has
-  `~/.android/orbit.keystore` (`ee8e3ad9…7451`). Installing the APK built here over the installed app requires
-  uninstalling it, which **erases all app data**. I did not install it. The original keystore (from the machine that
-  built 1.19) is needed.
-- **Android screen updates.** `tools/release.mjs` signs `web/update/manifest.json` with `~/.config/orbit/update-key.pem`,
-  which is missing here. Without it, installed Android apps can't receive the new screens.
-- **Deploys** need your go-ahead (see "Next steps").
+The original keystore (certificate `a309d322…bec0`) and update key were lost. 1.21 uses a new app id
+(`me.ali.orbitapp`), this machine's keystore (`ee8e3ad9…7451`) and a new update key (`~/.config/orbit/update-key.pem`),
+so it installs next to the old app and data moves over through a backup. A 1.20-format backup restoring
+completely into the new app is covered by `tests/data.cjs` step 10. Back up both keys: losing them again means
+another move.
 
 ## Open findings from the audit
 
@@ -84,14 +82,12 @@ cd android && VERSION_CODE=27 ./build.sh        # needs JDK 17, Android SDK plat
 
 `APP_VERSION` is still `1.20` and `web/sw.js` is still `orbit-v19`; bump both when releasing.
 
-## Next steps (need you)
+## Next steps
 
-1. Provide the original Android keystore and `~/.config/orbit/update-key.pem` (or decide to start a new signing key,
-   which means every Android user exports a backup, uninstalls, installs and restores).
-2. Bump `APP_VERSION` (1.21) and `VERSION` in `web/sw.js`, run `node tools/release.mjs`, then `git push` to deploy the
-   iPhone/web version.
-3. `cd push && npx wrangler deploy` for the People server changes. They work with installed apps, so the order of steps 2
-   and 3 doesn't matter.
-4. Build a 1.21 APK with the original key, attach it to a GitHub release, and announce it with `tools/release.mjs --apk …`.
-5. On the phone: check the new SMS parser against the real inbox, the reminders/water notifications in Persian, and the
+1. Deploy the server (`cd push && npx wrangler deploy`) and push `main` (iPhone/web), if not done yet.
+2. Install `Orbit-1.21.apk` (app id `me.ali.orbitapp`) next to the old app and move your data with a backup.
+3. On the phone: check the new SMS parser against the real inbox, Persian water notifications, and
    Notifications → Reliability check.
+4. Optionally publish the APK as a GitHub release and announce it with
+   `node tools/release.mjs --apk android/build/Orbit.apk --code 28 --name 1.21 --url <asset url>`, so later APKs can be
+   offered inside the app.
