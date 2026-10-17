@@ -22,14 +22,18 @@ import java.net.URL;
 
 /**
  * People notifications while the app is closed. A WebView app can't receive Web Push, so the app asks the
- * Orbit server for new events (messages, requests, answers) and shows them. It checks about every 90 seconds
- * with a chain of exact alarms (Android stretches this while the phone is in deep sleep), with a 15-minute
- * job as a backup in case the chain is ever broken. The daily question is armed separately as a local alarm.
+ * Orbit server for new events (messages, requests, answers) and shows them. The interval adapts to activity:
+ * about every 90 seconds while a conversation is active (just closed the app, or a message just arrived),
+ * every 5 minutes for the next hour, then every 15 minutes. Android may stretch any of these in deep sleep,
+ * so delivery times are never guaranteed. A 15-minute job is the backup in case the alarm chain is ever broken.
+ * Nothing is fetched while the app is open (it has its own live connection). The daily question is a local alarm.
  */
 public class SocialPoll extends JobService {
     private static final int JOB_ID = 0x50c1a1;
     static final String ACT_POLL = "me.ali.orbit.POLL";
-    private static final long EVERY = 90_000L;
+    private static final long FAST = 90_000L, MEDIUM = 5 * 60_000L, SLOW = 15 * 60_000L;
+    private static final long MIN_GAP = 20_000L;
+    private static final int MAX_BODY = 1 << 20;
     private static final String PREFS = "orbit_social";
 
     private static SharedPreferences prefs(Context c) {
@@ -71,8 +75,22 @@ public class SocialPoll extends JobService {
         AlarmManager am = c.getSystemService(AlarmManager.class);
         if (am == null) return;
         long at = System.currentTimeMillis() + in;
-        if (android.os.Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarm(c));
+        // exact alarms only for the fast pace; slower checks let Android batch them with other wake-ups
+        if (in <= FAST && (android.os.Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms())) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarm(c));
         else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarm(c));
+    }
+
+    /** Something happened in People (the app was just closed, or a message arrived): check often for a while. */
+    static void touch(Context c) {
+        prefs(c).edit().putLong("active", System.currentTimeMillis()).apply();
+    }
+
+    /** How long until the next check, based on how recently anything happened. */
+    static long pace(Context c) {
+        long idle = System.currentTimeMillis() - prefs(c).getLong("active", 0);
+        if (idle < 10 * 60_000L) return FAST;
+        if (idle < 60 * 60_000L) return MEDIUM;
+        return SLOW;
     }
 
     /** A check from the alarm chain: runs off the main thread, then arms the next one. */
@@ -80,14 +98,15 @@ public class SocialPoll extends JobService {
         Context app = c.getApplicationContext();
         new Thread(() -> {
             try { poll(app); } catch (Exception e) { prefs(app).edit().putString("result", "no connection").apply(); }
-            scheduleNext(app, EVERY);
+            scheduleNext(app, pace(app));
             done.finish();
         }).start();
     }
 
     /** When the background check last ran, for the Notifications screen. */
     static String status(Context c) {
-        return "{\"last\":" + prefs(c).getLong("last", 0) + ",\"result\":" + org.json.JSONObject.quote(prefs(c).getString("result", "")) + "}";
+        return "{\"last\":" + prefs(c).getLong("last", 0) + ",\"result\":" + org.json.JSONObject.quote(prefs(c).getString("result", ""))
+                + ",\"every\":" + pace(c) / 1000 + "}";
     }
 
     /** Events the app has already shown don't need a notification later. */
@@ -99,7 +118,7 @@ public class SocialPoll extends JobService {
     public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
             try { poll(this); } catch (Exception ignored) { }
-            scheduleNext(this, EVERY); // the backup job also restarts a broken alarm chain
+            scheduleNext(this, pace(this)); // the backup job also restarts a broken alarm chain
             jobFinished(params, false);
         }).start();
         return true;
@@ -110,9 +129,11 @@ public class SocialPoll extends JobService {
         return true;
     }
 
-    private static void poll(Context c) throws Exception {
+    /** One check at a time, and not more often than every 20 seconds (the alarm and the job can coincide). */
+    private static synchronized void poll(Context c) throws Exception {
         String url = prefs(c).getString("url", ""), token = prefs(c).getString("token", "");
-        if (url.isEmpty() || token.isEmpty()) return;
+        if (url.isEmpty() || token.isEmpty() || MainActivity.isOpen()) return;
+        if (System.currentTimeMillis() - prefs(c).getLong("last", 0) < MIN_GAP) return;
         long seen = prefs(c).getLong("seen", 0);
         prefs(c).edit().putLong("last", System.currentTimeMillis()).putString("result", "checking").apply();
         HttpURLConnection con = (HttpURLConnection) new URL(url + "/s/events?since=" + seen).openConnection();
@@ -138,6 +159,7 @@ public class SocialPoll extends JobService {
                 if ("q".equals(ev.optString("t")) && ev.optBoolean("sched")) continue; // the local alarm already showed it
                 Scheduler.social(c, n.optString("title", "Orbit"), n.optString("body", ""), n.optString("go", "people"), n.optString("tag", "social"));
             }
+            if (max > seen) touch(c);
             markSeen(c, max);
         } finally {
             con.disconnect();
@@ -147,7 +169,10 @@ public class SocialPoll extends JobService {
     private static String read(InputStream in) throws java.io.IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
-        for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+        for (int n; (n = in.read(buf)) > 0; ) {
+            out.write(buf, 0, n);
+            if (out.size() > MAX_BODY) { in.close(); throw new java.io.IOException("response too large"); }
+        }
         in.close();
         return out.toString("UTF-8");
     }

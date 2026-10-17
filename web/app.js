@@ -1665,17 +1665,21 @@ function remSummary(r) {
 }
 /** The rule a deliverer needs: schedule fields + display text (+ live water progress). */
 function remRule(r) {
-  const base = { id: r.id, on: r.on !== false, kind: r.kind, until: r.until || '', water: !!r.water, title: (r.emoji ? r.emoji + ' ' : '') + (r.title || 'Reminder'), body: r.note || remSummary(r) };
+  const base = { id: r.id, on: r.on !== false, kind: r.kind, until: r.until || '', water: !!r.water, title: (r.emoji ? r.emoji + ' ' : '') + (r.title || tr('Reminder')), body: r.note || tr(remSummary(r)) };
   if (r.kind === 'once') Object.assign(base, { date: r.date, time: r.time });
   if (r.kind === 'daily') Object.assign(base, { times: r.times, days: r.days });
   if (r.kind === 'interval') Object.assign(base, { every: r.every, start: r.start, end: r.end, days: r.days, stopAtGoal: !!r.stopAtGoal });
   if (r.kind === 'monthly') Object.assign(base, { dom: r.dom, cal: r.cal, time: r.time });
   if (r.water) {
     const goal = S.settings.waterGoal, count = waterToday.value;
-    Object.assign(base, { title: '💧 Time for some water', goal, count, day: R.today, glassMl: S.settings.glassMl, goalDay: count >= goal ? R.today : null });
+    Object.assign(base, { title: tr('💧 Time for some water'), goal, count, day: R.today, glassMl: S.settings.glassMl, goalDay: count >= goal ? R.today : null });
   }
   return base;
 }
+/** Notification text for Android, in the person's language; {c} and {g} are filled in on the phone. */
+const trSlots = str => tr(str.replace('{c}', '7301').replace('{g}', '7302')).replace('7301', '{c}').replace('7302', '{g}');
+const WATER_TEXT = () => ({ t_none: tr('No water logged yet today'), t_some: trSlots('{c} of {g} glasses so far today'), t_add: trSlots('+1 glass ({c} ml)'),
+  t_goal: tr('Goal reached! 🎉'), t_logged: tr('Logged 💧'), t_today: trSlots('{c} of {g} glasses today') });
 const remRules = computed(() => S.reminders.filter(r => r.on !== false).map(remRule));
 const remNext = r => OrbitSchedule.ruleTimes(remRule(r), Date.now(), TZ, 3);
 const waterRem = computed(() => S.reminders.find(r => r.water));
@@ -1727,12 +1731,21 @@ function refreshAndroidStatus() {
 function payload() {
   return { v: 2, tz: TZ, reminders: plan.value, rules: remRules.value, water: null };
 }
+/** Android extras: translated texts, and what a snooze may still remind about. */
+function nativePayload() {
+  const p = payload();
+  const w = WATER_TEXT();
+  p.rules = p.rules.map(r => (r.water ? { ...r, ...w } : r));
+  p.labels = { done: tr('✓ Done'), snooze: trSlots('Snooze {c} min') };
+  p.live = S.tasks.filter(t => !t.done).map(t => 'task:' + t.id);
+  return p;
+}
 let syncTimer, retryIn = 30e3;
 function scheduleSync(ms = 600) { clearTimeout(syncTimer); syncTimer = setTimeout(syncNow, ms); }
 async function syncNow() {
   const p = payload();
   if (AN) {
-    try { AN.sync(JSON.stringify(p)); Rem.state = 'ok'; Rem.last = Date.now(); } catch (e) { Rem.state = 'error'; }
+    try { AN.sync(JSON.stringify(nativePayload())); Rem.state = 'ok'; Rem.last = Date.now(); } catch (e) { Rem.state = 'error'; }
     return;
   }
   if (!Rem.push.token) return;
@@ -1796,7 +1809,7 @@ async function disablePush() {
   say('Notifications turned off');
 }
 async function testNotify() {
-  if (Native.has) { say('Sending a test in 5 seconds…'); AN.sync(JSON.stringify({ ...payload(), reminders: [...plan.value, { id: 'test:' + Date.now(), at: Date.now() + 5000, ch: 'tasks', title: '🔔 Orbit test', body: 'Notifications work!', go: 'alerts' }] })); return; }
+  if (Native.has) { say('Sending a test in 5 seconds…'); AN.sync(JSON.stringify({ ...nativePayload(), reminders: [...plan.value, { id: 'test:' + Date.now(), at: Date.now() + 5000, ch: 'tasks', title: '🔔 Orbit test', body: 'Notifications work!', go: 'alerts' }] })); return; }
   Rem.busy = true;
   try {
     const r = await fetch(PUSH_URL + '/test', { method: 'POST', headers: { Authorization: 'Bearer ' + Rem.push.token } });
@@ -4805,7 +4818,14 @@ const SettingsView = {
     function check(text) { const b = readBackup(text); if (b.error) { err.value = b.error; prev.value = null; } else { err.value = ''; prev.value = b; } }
     const canPickFile = !Native.has || !!(AN && AN.pickText);
     function chooseFile() {
-      if (AN && AN.pickText) { window.orbitPickedText = t => check(t); AN.pickText(); return; }
+      if (AN && AN.pickText) {
+        window.orbitPickedText = (t, e) => {
+          if (e === 'large') err.value = 'This file is too large to be an Orbit backup';
+          else if (e) err.value = 'That file couldn\'t be read';
+          else if (t != null) check(t);
+        };
+        AN.pickText(); return;
+      }
       const inp = document.createElement('input');
       inp.type = 'file'; inp.accept = '.json,application/json,text/plain'; inp.style.display = 'none';
       inp.onchange = () => {
@@ -5027,6 +5047,8 @@ app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).compon
   .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding).component('RelPick', RelPick)
   .component('EmojiPick', EmojiPick).component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip);
 app.mount('#app');
+// tell Android this version of the screens started fine (a version that never gets here is rolled back)
+try { if (AN && AN.bootOk) setTimeout(() => AN.bootOk(), 1500); } catch (e) {}
 
 if (!Native.has) {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {

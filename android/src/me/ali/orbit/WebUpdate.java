@@ -33,6 +33,8 @@ import java.util.Iterator;
  * launch; the page keeps its origin, so app data is untouched. The manifest also names the latest APK,
  * which the app offers as "Update available" and installs after checking its hash.
  * Nothing is accepted unless the manifest is signed with the release key whose public half is below.
+ * A downloaded build that fails to start twice in a row (the page never reports bootOk) is marked bad and
+ * the screens inside the APK are used instead, so a broken update can't lock anyone out of their data.
  */
 final class WebUpdate {
     static final String BASE = "https://aliyeganegi.github.io/orbit/";
@@ -41,8 +43,12 @@ final class WebUpdate {
     private static final long MAX_FILE = 8L << 20, MAX_APK = 64L << 20;
 
     private static File active;
+    private static int activeNum; // the build number of `active` (prefs may already name a newer download)
     private static boolean resolved;
     private static volatile String state = "";
+    // downloads hold their own lock, so serving a screen never waits for the network
+    private static final Object RUN = new Object();
+    private static final int MAX_TRIES = 2;
 
     private WebUpdate() { }
 
@@ -58,14 +64,41 @@ final class WebUpdate {
         resolved = true;
         SharedPreferences p = prefs(c);
         File dir = new File(p.getString("dir", ""));
-        if (p.getInt("build", 0) > bundledBuild(c) && p.getInt("minNative", 0) <= versionCode(c) && new File(dir, "index.html").isFile()) active = dir;
+        if (usable(c, p) && new File(dir, "index.html").isFile()) { active = dir; activeNum = p.getInt("build", 0); }
         return active;
+    }
+
+    private static boolean usable(Context c, SharedPreferences p) {
+        int build = p.getInt("build", 0);
+        return build > bundledBuild(c) && p.getInt("minNative", 0) <= versionCode(c) && p.getInt("bad", 0) != build;
+    }
+
+    /** The page is being (re)loaded: count start attempts of a downloaded build until it reports it started. */
+    static synchronized void pageLoading(Context c) {
+        if (active(c) == null) return;
+        SharedPreferences p = prefs(c);
+        int tries = p.getInt("tries", 0) + 1;
+        if (tries > MAX_TRIES) {
+            // it never got as far as the app starting: fall back to the screens inside the APK
+            p.edit().putInt("bad", p.getInt("build", 0)).putInt("tries", 0).commit();
+            resolved = false;
+            active = null;
+            android.util.Log.w("Orbit", "downloaded screens failed to start; using the built-in ones");
+            return;
+        }
+        p.edit().putInt("tries", tries).commit();
+    }
+
+    /** The app started and drew its first screen. */
+    static void bootOk(Context c) {
+        SharedPreferences p = prefs(c);
+        if (p.getInt("tries", 0) != 0) p.edit().putInt("tries", 0).apply();
     }
 
     /** True when downloaded screens are newer than the ones this session uses; the app then reloads to switch. */
     static synchronized boolean ready(Context c) {
         SharedPreferences p = prefs(c);
-        return p.getInt("build", 0) > activeBuild(c) && p.getInt("minNative", 0) <= versionCode(c) && new File(p.getString("dir", ""), "index.html").isFile();
+        return usable(c, p) && p.getInt("build", 0) > activeBuild(c) && new File(p.getString("dir", ""), "index.html").isFile();
     }
 
     /** Switches to the newest downloaded screens (the page must be reloaded right after). */
@@ -74,8 +107,8 @@ final class WebUpdate {
         active = null;
     }
 
-    static int activeBuild(Context c) {
-        return active(c) != null ? prefs(c).getInt("build", 0) : bundledBuild(c);
+    static synchronized int activeBuild(Context c) {
+        return active(c) != null ? activeNum : bundledBuild(c);
     }
 
     static InputStream open(Context c, String path) throws IOException {
@@ -105,21 +138,25 @@ final class WebUpdate {
     /** Looks for an update in the background whenever the app is opened (at most every 3 minutes unless forced). */
     static void check(Context c, boolean force) {
         Context app = c.getApplicationContext();
-        if (!force && System.currentTimeMillis() - prefs(app).getLong("checked", 0) < 3 * 60_000L) return;
+        SharedPreferences p = prefs(app);
+        long last = Math.max(p.getLong("checked", 0), p.getLong("tried", 0)); // failures back off too
+        if (!force && Math.abs(System.currentTimeMillis() - last) < 3 * 60_000L) return;
+        p.edit().putLong("tried", System.currentTimeMillis()).apply();
         new Thread(() -> {
-            try { run(app); } catch (Exception ignored) { }
+            try { synchronized (RUN) { run(app); } } catch (Exception ignored) { }
         }).start();
     }
 
-    private static synchronized void run(Context c) throws Exception {
+    private static void run(Context c) throws Exception {
         long now = System.currentTimeMillis();
         byte[] body = get(BASE + "update/manifest.json?t=" + now, MAX_FILE);
         byte[] sig = Base64.getMimeDecoder().decode(new String(get(BASE + "update/manifest.sig?t=" + now, 4096), "UTF-8").trim());
         if (!verify(body, sig)) return;
         JSONObject m = new JSONObject(new String(body, "UTF-8"));
         SharedPreferences p = prefs(c);
+        if (m.getInt("build") < p.getInt("seen", 0)) return; // an older signed manifest (stale cache or replay)
         JSONObject nat = m.optJSONObject("native");
-        p.edit().putLong("checked", now).putString("native", nat == null ? "" : nat.toString()).apply();
+        p.edit().putLong("checked", now).putInt("seen", m.getInt("build")).putString("native", nat == null ? "" : nat.toString()).apply();
         MainActivity.callJs("window.orbitUpdate && window.orbitUpdate('checked')");
 
         int build = m.getInt("build"), minNative = m.optInt("minNative", 0);
@@ -145,8 +182,11 @@ final class WebUpdate {
             f.getParentFile().mkdirs();
             try (FileOutputStream o = new FileOutputStream(f)) { o.write(data); }
         }
-        p.edit().putInt("build", build).putInt("minNative", minNative).putString("dir", dir.getAbsolutePath()).commit();
-        File keep = active(c);
+        File keep;
+        synchronized (WebUpdate.class) {
+            keep = active(c);
+            p.edit().putInt("build", build).putInt("minNative", minNative).putString("dir", dir.getAbsolutePath()).putInt("tries", 0).commit();
+        }
         File[] old = root.listFiles();
         if (old != null) for (File f : old) if (!f.equals(dir) && !f.equals(keep)) delete(f);
         MainActivity.callJs("window.orbitUpdate && window.orbitUpdate('ready')");
@@ -171,7 +211,7 @@ final class WebUpdate {
         JSONObject o = new JSONObject();
         try {
             o.put("code", versionCode(c)).put("name", versionName(c)).put("build", activeBuild(c)).put("state", state)
-                    .put("pendingBuild", prefs(c).getInt("build", 0) > activeBuild(c) ? prefs(c).getInt("build", 0) : 0);
+                    .put("pendingBuild", ready(c) ? prefs(c).getInt("build", 0) : 0);
             String n = prefs(c).getString("native", "");
             if (!n.isEmpty()) {
                 JSONObject nat = new JSONObject(n);

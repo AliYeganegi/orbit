@@ -15,6 +15,7 @@ public class SmsReceiver extends BroadcastReceiver {
         if (parts == null || parts.length == 0) return;
         StringBuilder body = new StringBuilder();
         for (SmsMessage m : parts) if (m != null && m.getMessageBody() != null) body.append(m.getMessageBody());
-        Sms.onIncoming(c, parts[0].getOriginatingAddress(), body.toString(), parts[0].getTimestampMillis());
+        // the phone's clock, like the inbox scan: the SMS centre's clock can be off, which would defeat de-duplication
+        Sms.onIncoming(c, parts[0].getOriginatingAddress(), body.toString(), System.currentTimeMillis());
     }
 }

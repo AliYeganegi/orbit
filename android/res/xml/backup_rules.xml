@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. App data (tasks, money, notes…) is still backed up so it comes back on a new phone,
+     but captured bank SMS waiting to be read, the People sign-in key and downloaded screens are not. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="orbit_sms.xml" />
+    <exclude domain="sharedpref" path="orbit_social.xml" />
+    <exclude domain="sharedpref" path="orbit_update.xml" />
+    <exclude domain="file" path="www" />
+    <exclude domain="file" path="updates" />
+</full-backup-content>

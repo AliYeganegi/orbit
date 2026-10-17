@@ -117,5 +117,15 @@
  "The same for both of you. Changes need": "برای هر دوتون یکیه. تغییرش باید تأیید بشه توسط",
  "to accept": "تا قبول کنه",
  "Sent. ": "فرستاده شد. ",
- "wants the daily question at {n}": "می‌خواد سؤال روزانه ساعت {n} بیاد"
+ "wants the daily question at {n}": "می‌خواد سؤال روزانه ساعت {n} بیاد",
+ "No water logged yet today": "امروز هنوز آبی ثبت نکردی",
+ "{n} of {n} glasses so far today": "تا الان {n} از {n} لیوان",
+ "+{n} glass ({n} ml)": "+{n} لیوان ({n} میلی‌لیتر)",
+ "Goal reached! 🎉": "به هدفت رسیدی! 🎉",
+ "Logged 💧": "ثبت شد 💧",
+ "{n} of {n} glasses today": "امروز {n} از {n} لیوان",
+ "✓ Done": "✓ انجام شد",
+ "Snooze {n} min": "تعویق {n} دقیقه",
+ "This file is too large to be an Orbit backup": "این فایل برای پشتیبان اوربیت خیلی بزرگه",
+ "That file couldn't be read": "این فایل خونده نشد"
 }

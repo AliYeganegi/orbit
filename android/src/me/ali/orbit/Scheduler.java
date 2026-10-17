@@ -38,6 +38,8 @@ final class Scheduler {
     static final int SNOOZE_MIN = 10;
     private static final String PREFS = "orbit_sched";
     private static final int WATER_NOTIF = 0x0a7e7;
+    /** Android allows about 500 pending alarms per app; stay well below so rules always get theirs. */
+    private static final int MAX_ARMED = 300;
 
     private Scheduler() { }
 
@@ -72,54 +74,95 @@ final class Scheduler {
         JSONObject plan = new JSONObject(json);
         JSONArray incoming = plan.optJSONArray("reminders");
         if (incoming == null) incoming = new JSONArray();
-
-        // snoozes are created natively, so the app doesn't know about them: carry pending ones over
-        long now = System.currentTimeMillis();
-        JSONArray old = reminders(c);
-        JSONArray next = new JSONArray();
-        Set<String> nextIds = new HashSet<>();
-        for (int i = 0; i < incoming.length(); i++) {
-            JSONObject r = incoming.getJSONObject(i);
-            if (r.optLong("at") > now && nextIds.add(r.getString("id"))) next.put(r);
-        }
-        for (int i = 0; i < old.length(); i++) {
-            JSONObject r = old.getJSONObject(i);
-            String id = r.getString("id");
-            if (id.startsWith("snooze:") && r.optLong("at") > now && nextIds.add(id)) next.put(r);
-        }
-        for (int i = 0; i < old.length(); i++) {
-            String id = old.getJSONObject(i).getString("id");
-            if (!nextIds.contains(id)) cancel(c, ACT_REMIND, id);
-        }
         JSONArray rules = plan.optJSONArray("rules");
         if (rules == null) rules = new JSONArray();
+        // ids the app still cares about (undone tasks...); a snooze for anything else is dropped
+        JSONArray liveA = plan.optJSONArray("live");
+        Set<String> live = null;
+        if (liveA != null) { live = new HashSet<>(); for (int i = 0; i < liveA.length(); i++) live.add(liveA.optString(i)); }
+
+        long now = System.currentTimeMillis();
         JSONArray oldRules = rules(c);
         Set<String> ruleIds = new HashSet<>();
+        int queued = queuedWater(c, dayKey(Calendar.getInstance()));
         for (int i = 0; i < rules.length(); i++) {
             JSONObject r = rules.getJSONObject(i);
             ruleIds.add(r.getString("id"));
             JSONObject prev = find(oldRules, r.getString("id"));
-            if (prev != null && prev.has("sent")) r.put("sent", prev.getLong("sent")); // keep "already delivered" marker
+            // keep the "already delivered" marker, but never one in the future (the clock was changed)
+            if (prev != null && prev.has("sent")) r.put("sent", Math.min(prev.getLong("sent"), now));
+            // "+1 glass" taps the app hasn't picked up yet still count
+            if (r.optBoolean("water") && queued > 0 && dayKey(Calendar.getInstance()).equals(r.optString("day"))) {
+                int count = r.optInt("count", 0) + queued;
+                r.put("count", count);
+                if (count >= r.optInt("goal", Integer.MAX_VALUE)) r.put("goalDay", r.optString("day"));
+            }
+        }
+
+        // snoozes are created natively, so the app doesn't know about them: carry pending ones over
+        JSONArray old = reminders(c);
+        java.util.List<JSONObject> list = new java.util.ArrayList<>();
+        Set<String> nextIds = new HashSet<>();
+        for (int i = 0; i < incoming.length(); i++) {
+            JSONObject r = incoming.optJSONObject(i);
+            if (r != null && r.optLong("at") > now && nextIds.add(r.optString("id"))) list.add(r);
+        }
+        for (int i = 0; i < old.length(); i++) {
+            JSONObject r = old.getJSONObject(i);
+            String id = r.getString("id");
+            if (!id.startsWith("snooze:") || r.optLong("at") <= now) continue;
+            String of = id.substring(7);
+            boolean alive = of.startsWith("rule:") ? ruleIds.contains(of.substring(5)) : live == null || live.contains(of);
+            if (alive && nextIds.add(id)) list.add(r);
+        }
+        java.util.Collections.sort(list, (a, b) -> Long.compare(a.optLong("at"), b.optLong("at")));
+        int room = Math.max(0, MAX_ARMED - rules.length());
+        JSONArray next = new JSONArray();
+        Set<String> armed = new HashSet<>();
+        for (JSONObject r : list) { if (next.length() >= room) break; next.put(r); armed.add(r.optString("id")); }
+
+        for (int i = 0; i < old.length(); i++) {
+            String id = old.getJSONObject(i).getString("id");
+            if (!armed.contains(id)) cancel(c, ACT_REMIND, id);
         }
         for (int i = 0; i < oldRules.length(); i++) {
             String id = oldRules.getJSONObject(i).getString("id");
             if (!ruleIds.contains(id)) cancel(c, ACT_RULE, id);
         }
         cancel(c, ACT_WATER, "water"); // the old single water alarm, superseded by rules
-        prefs(c).edit().putString("reminders", next.toString()).putString("rules", rules.toString()).remove("water").apply();
-        for (int i = 0; i < next.length(); i++) arm(c, next.getJSONObject(i));
-        for (int i = 0; i < rules.length(); i++) armRule(c, rules.getJSONObject(i));
+        SharedPreferences.Editor e = prefs(c).edit().putString("reminders", next.toString()).putString("rules", rules.toString()).remove("water");
+        JSONObject labels = plan.optJSONObject("labels");
+        if (labels != null) e.putString("labels", labels.toString());
+        e.apply();
+        // repeating rules first: they are few and must never be crowded out
+        for (int i = 0; i < rules.length(); i++) {
+            try { armRule(c, rules.getJSONObject(i)); } catch (RuntimeException ex) { android.util.Log.w("Orbit", "rule not armed", ex); }
+        }
+        for (int i = 0; i < next.length(); i++) {
+            try { arm(c, next.getJSONObject(i)); } catch (RuntimeException ex) { android.util.Log.w("Orbit", "reminder not armed", ex); }
+        }
     }
 
     /** Re-arms everything from storage (boot, time change, app update). */
     static synchronized void restore(Context c) {
-        try {
-            JSONArray rs = reminders(c);
-            long now = System.currentTimeMillis();
-            for (int i = 0; i < rs.length(); i++) if (rs.getJSONObject(i).optLong("at") > now) arm(c, rs.getJSONObject(i));
-            JSONArray rules = rules(c);
-            for (int i = 0; i < rules.length(); i++) armRule(c, rules.getJSONObject(i));
-        } catch (JSONException ignored) { }
+        long now = System.currentTimeMillis();
+        JSONArray rules = rules(c);
+        boolean changed = false;
+        for (int i = 0; i < rules.length(); i++) {
+            JSONObject r = rules.optJSONObject(i);
+            if (r == null) continue;
+            try {
+                if (r.optLong("sent", 0) > now) { r.put("sent", now); changed = true; } // the clock went back
+                armRule(c, r);
+            } catch (JSONException | RuntimeException ex) { android.util.Log.w("Orbit", "rule not restored", ex); }
+        }
+        if (changed) prefs(c).edit().putString("rules", rules.toString()).apply();
+        JSONArray rs = reminders(c);
+        for (int i = 0; i < rs.length(); i++) {
+            JSONObject r = rs.optJSONObject(i);
+            if (r == null || r.optLong("at") <= now) continue;
+            try { arm(c, r); } catch (JSONException | RuntimeException ex) { android.util.Log.w("Orbit", "reminder not restored", ex); }
+        }
     }
 
     // ---------------------------------------------------------------- alarms
@@ -261,8 +304,8 @@ final class Scheduler {
             Notification.Builder b = base(c, ch, hit.optString("title", "Orbit"), hit.optString("body", ""), hit.optString("go", ""), id);
             String task = hit.optString("task", "");
             if (!task.isEmpty()) {
-                b.addAction(action(c, ACT_DONE, id, "✓ Done", hit));
-                b.addAction(action(c, ACT_SNOOZE, id, "Snooze " + SNOOZE_MIN + " min", hit));
+                b.addAction(action(c, ACT_DONE, id, label(c, "done", "✓ Done"), hit));
+                b.addAction(action(c, ACT_SNOOZE, id, snoozeLabel(c), hit));
             }
             notify(c, id.hashCode(), b.build());
         } catch (JSONException ignored) { }
@@ -283,9 +326,9 @@ final class Scheduler {
             if (r.optBoolean("water")) {
                 if (!(r.optBoolean("stopAtGoal") && dayKey(Calendar.getInstance()).equals(goalDay(r)))) {
                     int count = todayCount(r), goal = r.optInt("goal", 8);
-                    String body = count == 0 ? "No water logged yet today" : count + " of " + goal + " glasses so far today";
+                    String body = count == 0 ? text(r, "t_none", "No water logged yet today") : fill(text(r, "t_some", "{c} of {g} glasses so far today"), count, goal);
                     Notification.Builder b = base(c, "water", r.optString("title", "💧 Time for some water"), body, "water", "water");
-                    b.addAction(action(c, ACT_WATER_ADD, id, "+1 glass (" + r.optInt("glassMl", 250) + " ml)", null));
+                    b.addAction(action(c, ACT_WATER_ADD, id, fill(text(r, "t_add", "+1 glass ({c} ml)"), r.optInt("glassMl", 250), 0), null));
                     b.setTimeoutAfter(50 * 60_000L);
                     notify(c, WATER_NOTIF, b.build());
                 }
@@ -293,8 +336,8 @@ final class Scheduler {
                 String title = r.optString("title", "Reminder"), body = r.optString("body", "");
                 Notification.Builder b = base(c, "reminders", title, body, "reminders", "rule:" + id);
                 JSONObject snooze = new JSONObject().put("title", title).put("body", body).put("task", "");
-                b.addAction(action(c, ACT_DONE, "rule:" + id, "✓ Done", snooze));
-                b.addAction(action(c, ACT_SNOOZE, "rule:" + id, "Snooze " + SNOOZE_MIN + " min", snooze));
+                b.addAction(action(c, ACT_DONE, "rule:" + id, label(c, "done", "✓ Done"), snooze));
+                b.addAction(action(c, ACT_SNOOZE, "rule:" + id, snoozeLabel(c), snooze));
                 notify(c, ("rule:" + id).hashCode(), b.build());
             }
             armRule(c, r);
@@ -316,8 +359,8 @@ final class Scheduler {
                 if (count >= goal) w.put("goalDay", today);
                 prefs(c).edit().putString("rules", rules.toString()).apply();
                 enqueue(c, new JSONObject().put("t", "water").put("day", today).put("n", 1));
-                String title = count >= goal ? "Goal reached! 🎉" : "Logged 💧";
-                Notification.Builder b = base(c, "water", title, count + " of " + goal + " glasses today", "water", "water");
+                String title = count >= goal ? text(w, "t_goal", "Goal reached! 🎉") : text(w, "t_logged", "Logged 💧");
+                Notification.Builder b = base(c, "water", title, fill(text(w, "t_today", "{c} of {g} glasses today"), count, goal), "water", "water");
                 b.setOnlyAlertOnce(true).setTimeoutAfter(4000);
                 notify(c, WATER_NOTIF, b.build());
                 armRule(c, w);
@@ -404,6 +447,37 @@ final class Scheduler {
     private static JSONObject find(JSONArray a, String id) {
         for (int i = 0; i < a.length(); i++) { JSONObject o = a.optJSONObject(i); if (o != null && id.equals(o.optString("id"))) return o; }
         return null;
+    }
+
+    /** Interface text sent by the app in the person's language, or the English default. */
+    private static String text(JSONObject r, String key, String def) {
+        String v = r.optString(key, "");
+        return v.isEmpty() ? def : v;
+    }
+
+    private static String label(Context c, String key, String def) {
+        try { return text(new JSONObject(prefs(c).getString("labels", "{}")), key, def); } catch (JSONException e) { return def; }
+    }
+
+    private static String snoozeLabel(Context c) {
+        return fill(label(c, "snooze", "Snooze {c} min"), SNOOZE_MIN, 0);
+    }
+
+    private static String fill(String t, int c, int g) {
+        return t.replace("{c}", String.valueOf(c)).replace("{g}", String.valueOf(g));
+    }
+
+    /** "+1 glass" taps from notifications waiting for the app to pick them up. */
+    private static int queuedWater(Context c, String day) {
+        int n = 0;
+        try {
+            JSONArray q = new JSONArray(prefs(c).getString("queue", "[]"));
+            for (int i = 0; i < q.length(); i++) {
+                JSONObject o = q.optJSONObject(i);
+                if (o != null && "water".equals(o.optString("t")) && day.equals(o.optString("day"))) n += o.optInt("n", 0);
+            }
+        } catch (JSONException ignored) { }
+        return n;
     }
 
     private static int todayCount(JSONObject w) {

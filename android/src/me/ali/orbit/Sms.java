@@ -27,7 +27,9 @@ final class Sms {
     private static final int MAX_QUEUE = 200;
     private static final int NOTIF_ID = 0x5a5;
     // cheap pre-filter; the real parsing happens in web/sms.js
-    private static final Pattern MONEY = Pattern.compile("مانده|موجودی|موجودي|برداشت|واریز|واريز|خرید|خريد|مبلغ|ریال|ريال|تومان|کارمزد|انتقال|balance|rial", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MONEY = Pattern.compile("مانده|موجودی|موجودي|برداشت|واریز|واريز|خرید|خريد|پرداخت|مبلغ|ریال|ريال|تومان|کارمزد|انتقال|سود|برگشت|عودت|balance|rial", Pattern.CASE_INSENSITIVE);
+    // one-time passwords and login codes are never kept, even when they mention an amount (mirrors OTP in web/sms.js)
+    private static final Pattern OTP = Pattern.compile("(^|[^\\p{L}])(رمز|کد\\s*(تایید|تأیید|فعال\\s*سازی|ورود|امنیتی))(?![\\p{L}])|\\bOTP\\b|password|verification", Pattern.CASE_INSENSITIVE);
 
     private Sms() { }
 
@@ -49,7 +51,7 @@ final class Sms {
     }
 
     static boolean looksLikeMoney(String body) {
-        return body != null && MONEY.matcher(body).find();
+        return body != null && MONEY.matcher(body).find() && !OTP.matcher(body).find();
     }
 
     /** Recent inbox messages that look like bank transactions, newest first. */
