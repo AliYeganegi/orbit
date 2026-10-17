@@ -170,6 +170,16 @@ function chime() {
 const Native = {
   has: !!AN,
   vibrate(ms = 10) { try { AN ? AN.vibrate(ms) : navigator.vibrate && navigator.vibrate(ms); } catch (e) {} },
+  /** Shares a file (backup, CSV). Android 1.21+ writes a real file; older Android builds fall back to plain text. */
+  shareFile(name, mime, text) {
+    try { if (AN && AN.shareFile) return AN.shareFile(name, mime, text); } catch (e) {}
+    try { if (AN) return AN.share(text); } catch (e) {}
+    const file = new File([text], name, { type: mime });
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) return navigator.share({ files: [file], title: name }).catch(() => {});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  },
   share(text) {
     try { if (AN) return AN.share(text); } catch (e) {}
     if (navigator.share) {
@@ -255,25 +265,148 @@ const defaults = () => ({
   water: {}, mood: {}, focusLog: {},
   timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
-function hydrate(raw) {
+// Data format version. Bump it when a migration below changes the shape of saved data.
+const SCHEMA = 2;
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+// expected type of every top-level field; anything else from storage or a restore falls back to the default
+const SHAPE = {
+  tasks: 'list', habits: 'list', notes: 'list', money: 'list', customCats: 'list', countdowns: 'list', accounts: 'list', reminders: 'list',
+  cycleDays: 'strings', smsSeen: 'strings', cycleLog: 'map', water: 'map', mood: 'map', focusLog: 'map', timer: 'map', settings: 'map',
+};
+/**
+ * Merges saved (or restored) data over the defaults, type-checking every field so one bad value can't stop the app
+ * from starting. `issues` collects the names of fields that were dropped. Unknown top-level fields (from a newer
+ * version) are kept so a round trip doesn't lose them.
+ */
+function hydrate(raw, issues = []) {
   const d = defaults();
-  if (!raw || typeof raw !== 'object') return d;
-  for (const k of Object.keys(d)) if (raw[k] !== undefined) d[k] = raw[k];
-  d.timer = { ...defaults().timer, ...(raw.timer || {}) };
-  const s = raw.settings || {};
-  const ds = defaults().settings;
-  d.settings = { ...ds, ...s, sms: { ...ds.sms, ...(s.sms || {}) }, focus: { ...ds.focus, ...(s.focus || {}) }, cycle: { ...ds.cycle, ...(s.cycle || {}), pill: { ...ds.cycle.pill, ...((s.cycle || {}).pill || {}) }, tip: { ...ds.cycle.tip, ...((s.cycle || {}).tip || {}) } }, notify: { ...ds.notify, ...(s.notify || {}) }, waterRemind: { ...ds.waterRemind, ...(s.waterRemind || {}) } };
+  if (!isObj(raw)) { issues.push('format'); return d; }
+  for (const k of Object.keys(raw)) {
+    const v = raw[k], want = SHAPE[k];
+    if (!want) { if (!(k in d) && k !== 'schema') d[k] = v; continue; }
+    if (v === undefined) continue;
+    if (want === 'list' && Array.isArray(v)) { d[k] = v.filter(isObj); if (d[k].length !== v.length) issues.push(k); }
+    else if (want === 'strings' && Array.isArray(v)) d[k] = v.filter(x => typeof x === 'string');
+    else if (want === 'map' && isObj(v)) d[k] = v;
+    else issues.push(k);
+  }
+  d.timer = { ...defaults().timer, ...(isObj(raw.timer) ? raw.timer : {}) };
+  const s = isObj(raw.settings) ? raw.settings : {}, ds = defaults().settings, o = v => (isObj(v) ? v : {});
+  const cy = o(s.cycle);
+  d.settings = { ...ds, ...s, sms: { ...ds.sms, ...o(s.sms) }, focus: { ...ds.focus, ...o(s.focus) },
+    cycle: { ...ds.cycle, ...cy, pill: { ...ds.cycle.pill, ...o(cy.pill) }, tip: { ...ds.cycle.tip, ...o(cy.tip) } },
+    notify: { ...ds.notify, ...o(s.notify) }, waterRemind: { ...ds.waterRemind, ...o(s.waterRemind) } };
+  d.schema = SCHEMA;
   return d;
 }
-function load() { try { return hydrate(JSON.parse(localStorage.getItem(KEY))); } catch (e) { return defaults(); } }
+// storage health, shown as a banner when something is wrong
+const Store = reactive({ error: '', corrupt: '', readonly: false });
+function load() {
+  let raw = null;
+  try { raw = localStorage.getItem(KEY); } catch (e) { Store.error = 'unavailable'; }
+  if (raw == null) return defaults();
+  try { return hydrate(JSON.parse(raw)); } catch (e) {
+    // unreadable: keep the original text so it can still be recovered, and never write over it unasked
+    const k = KEY + '.corrupt.' + Date.now();
+    try { localStorage.setItem(k, raw); Store.corrupt = k; } catch (e2) { Store.corrupt = KEY; Store.readonly = true; }
+    return defaults();
+  }
+}
 const S = reactive(load());
 let saveT;
-const saveNow = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+function saveNow() {
+  if (Store.readonly) return false;
+  const json = JSON.stringify(S);
+  try { localStorage.setItem(KEY, json); Store.error = ''; return true; } catch (e) {
+    // the chat cache is only a cache: drop it to make room, then try once more
+    try { localStorage.removeItem('orbit.chatcache'); localStorage.setItem(KEY, json); Store.error = ''; return true; } catch (e2) { Store.error = 'full'; return false; }
+  }
+}
 watch(S, () => { clearTimeout(saveT); saveT = setTimeout(saveNow, 200); }, { deep: true });
 document.addEventListener('visibilitychange', () => document.hidden && saveNow());
+// migrations never stop the app from starting: a failure is skipped and retried on the next launch
+const migrate = (name, fn) => { try { fn(); } catch (e) { console.warn('migration skipped: ' + name); } };
 
+/* ---------- backup & restore ---------- */
+// a backup can hold the whole app or only some parts; restoring replaces only the parts it contains
+const MODULES = [
+  { id: 'tasks', l: 'Tasks', keys: ['tasks'] },
+  { id: 'habits', l: 'Habits', keys: ['habits'] },
+  { id: 'notes', l: 'Notes', keys: ['notes'] },
+  { id: 'money', l: 'Money', keys: ['money', 'accounts', 'customCats', 'smsSeen'] },
+  { id: 'reminders', l: 'Reminders & countdowns', keys: ['reminders', 'countdowns'] },
+  { id: 'wellbeing', l: 'Water, mood & focus', keys: ['water', 'mood', 'focusLog'] },
+  { id: 'cycle', l: 'Cycle', keys: ['cycleDays', 'cycleLog'] },
+  { id: 'settings', l: 'Settings', keys: ['settings', 'timer'] },
+];
+const MAX_BACKUP = 25e6;
+const BEFORE_RESTORE = KEY + '.before-restore';
+function makeBackup(mods) {
+  const all = mods.length === MODULES.length, data = {};
+  for (const m of MODULES) if (mods.includes(m.id)) for (const k of m.keys) data[k] = S[k];
+  if (all) for (const k of Object.keys(S)) if (!(k in data) && k !== 'schema') data[k] = S[k]; // fields from newer versions
+  return JSON.stringify({ app: 'orbit', v: 2, schema: SCHEMA, appVersion: APP_VERSION, at: new Date().toISOString(), modules: mods, data });
+}
+const countOf = d => ({
+  tasks: (d.tasks || []).length, habits: (d.habits || []).length, notes: (d.notes || []).length, money: (d.money || []).length,
+  reminders: (d.reminders || []).length + (d.countdowns || []).length, wellbeing: Object.keys(d.water || {}).length + Object.keys(d.mood || {}).length + Object.keys(d.focusLog || {}).length,
+  cycle: (d.cycleDays || []).length + Object.keys(d.cycleLog || {}).length, settings: d.settings ? 1 : 0,
+});
+/** Reads and checks a backup without changing anything. Returns { error } or a preview. */
+function readBackup(text) {
+  text = String(text || '').trim();
+  if (!text) return { error: 'The backup is empty' };
+  if (text.length > MAX_BACKUP) return { error: 'This file is too large to be an Orbit backup' };
+  let j;
+  try { j = JSON.parse(text.replace(/^﻿/, '')); } catch (e) { return { error: 'This isn\'t a readable backup file. Make sure you copied all of it' }; }
+  let data, mods, at = '', ver = '';
+  if (isObj(j) && j.app === 'orbit' && isObj(j.data)) {
+    data = j.data; at = j.at || ''; ver = j.appVersion || '';
+    mods = Array.isArray(j.modules) ? MODULES.map(m => m.id).filter(id => j.modules.includes(id)) : MODULES.map(m => m.id);
+  } else if (isObj(j) && Object.keys(SHAPE).filter(k => k in j).length >= 3) {
+    data = j; mods = MODULES.map(m => m.id); // very old backups were the raw saved state
+  } else return { error: 'This isn\'t an Orbit backup' };
+  const issues = [];
+  const typed = hydrate(data, issues);
+  const wanted = new Set(mods.flatMap(id => MODULES.find(m => m.id === id).keys));
+  const bad = issues.filter(k => wanted.has(k) || k === 'format');
+  const newer = (j.schema || 0) > SCHEMA;
+  const counts = countOf(data);
+  const empty = mods.every(id => !counts[id]);
+  return { data: typed, mods, at, ver, counts, bad, newer, empty };
+}
+/** Replaces the parts of the data a checked backup contains. A safety copy is saved first; nothing changes if that fails. */
+function applyBackup(b) {
+  const snap = JSON.stringify(S);
+  try { localStorage.setItem(BEFORE_RESTORE, JSON.stringify({ at: Date.now(), state: snap })); } catch (e) { return 'There isn\'t enough space to keep a safety copy of your current data, so nothing was changed. Export a backup and free some space first.'; }
+  const lang = S.settings.lang;
+  for (const id of b.mods) for (const k of MODULES.find(m => m.id === id).keys) S[k] = b.data[k];
+  if (b.mods.length === MODULES.length) for (const k of Object.keys(b.data)) if (!SHAPE[k] && k !== 'schema') S[k] = b.data[k];
+  S.settings.onboarded = true;
+  runMigrations();
+  if (!saveNow()) { // couldn't be saved: put everything back exactly as it was
+    const old = JSON.parse(snap); for (const k of Object.keys(S)) delete S[k]; Object.assign(S, old);
+    return 'The restored data couldn\'t be saved (storage is full), so your current data was kept.';
+  }
+  if ((S.settings.lang || 'en') !== (lang || 'en')) { window.orbitBeforeReload && window.orbitBeforeReload(); location.reload(); }
+  return '';
+}
+function undoRestore() {
+  let b;
+  try { b = JSON.parse(localStorage.getItem(BEFORE_RESTORE)); } catch (e) { b = null; }
+  if (!b || !b.state) return false;
+  const old = hydrate(JSON.parse(b.state));
+  for (const k of Object.keys(S)) if (!(k in old)) delete S[k];
+  Object.assign(S, old);
+  if (!saveNow()) return false;
+  try { localStorage.removeItem(BEFORE_RESTORE); } catch (e) {}
+  return true;
+}
+const restoreUndoAt = () => { try { return (JSON.parse(localStorage.getItem(BEFORE_RESTORE)) || {}).at || 0; } catch (e) { return 0; } };
+
+function runMigrations() {
 // one-off cleanup of the notification test run on the developer's phone (2026-10-12); no-op elsewhere
-try {
+migrate('test-cleanup', () => {
   const bk = JSON.parse(localStorage.getItem('orbit.testBackup'));
   if (bk) {
     S.tasks = S.tasks.filter(t => t.id !== 'zztest');
@@ -282,22 +415,28 @@ try {
     if (bk.count) S.water[k] = bk.count; else delete S.water[k];
     localStorage.removeItem('orbit.testBackup');
   }
-} catch (e) {}
+});
 
 // one-off (1.6): earlier versions imported 30 days of SMS as drafts; only keep what the user already categorized
-if (S.settings.sms.on && !S.settings.sms.since) {
-  S.money = S.money.filter(t => !(t.src === 'sms' && t.pending));
-  S.settings.sms.since = Date.now(); S.settings.sms.last = Date.now();
-}
+migrate('sms-backfill', () => {
+  if (S.settings.sms.on && !S.settings.sms.since) {
+    S.money = S.money.filter(t => !(t.src === 'sms' && t.pending));
+    S.settings.sms.since = Date.now(); S.settings.sms.last = Date.now();
+  }
+});
 
 // one-off (1.8): the water schedule becomes a regular, editable reminder
-if (!S.settings.remMigrated) {
-  const w = S.settings.waterRemind || {};
-  if (!S.reminders.some(r => r.water)) S.reminders.unshift({ id: 'water', on: !!w.on, water: true, title: 'Drink water', emoji: '💧', color: '#3ba4ff', note: '',
-    kind: 'interval', every: w.every || 60, start: w.start || '09:00', end: w.end || '22:00', days: w.days || [0, 1, 2, 3, 4, 5, 6], stopAtGoal: w.stopAtGoal !== false,
-    until: '', created: Date.now() });
-  S.settings.remMigrated = true;
+migrate('water-reminder', () => {
+  if (!S.settings.remMigrated) {
+    const w = S.settings.waterRemind || {};
+    if (!S.reminders.some(r => r.water)) S.reminders.unshift({ id: 'water', on: !!w.on, water: true, title: 'Drink water', emoji: '💧', color: '#3ba4ff', note: '',
+      kind: 'interval', every: w.every || 60, start: w.start || '09:00', end: w.end || '22:00', days: w.days || [0, 1, 2, 3, 4, 5, 6], stopAtGoal: w.stopAtGoal !== false,
+      until: '', created: Date.now() });
+    S.settings.remMigrated = true;
+  }
+});
 }
+runMigrations();
 
 const R = reactive({ now: Date.now(), today: keyOf(new Date()), sysDark: Native.sysDark() });
 const nav = reactive({ tab: 'today', screen: null });
@@ -1668,14 +1807,27 @@ window.orbitGo = where => {
 };
 drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
 // Android switches to newly downloaded screens by reloading: save first, then come back to the same place
+// open editors register a function returning their unsaved form, so it survives the reload
+const Drafts = {};
 window.orbitBeforeReload = () => {
   saveNow(); saveChatCache();
-  try { sessionStorage.setItem('orbit.resume', JSON.stringify({ tab: nav.tab, screen: nav.screen, open: Soc.open, at: Date.now() })); } catch (e) {}
+  const drafts = {};
+  for (const k of Object.keys(Drafts)) { try { const x = Drafts[k](); if (x) drafts[k] = x; } catch (e) {} }
+  try { sessionStorage.setItem('orbit.resume', JSON.stringify({ tab: nav.tab, screen: nav.screen, open: Soc.open, drafts, at: Date.now() })); } catch (e) {}
 };
 try {
   const r = JSON.parse(sessionStorage.getItem('orbit.resume'));
   sessionStorage.removeItem('orbit.resume');
-  if (r && Date.now() - r.at < 60e3 && S.settings.onboarded) { nav.tab = r.tab || 'today'; Soc.open = r.open; nav.screen = r.screen; setTimeout(() => say('Orbit was updated ✨'), 600); }
+  if (r && Date.now() - r.at < 60e3 && S.settings.onboarded) {
+    nav.tab = r.tab || 'today'; Soc.open = r.open; nav.screen = r.screen; setTimeout(() => say('Orbit was updated ✨'), 600);
+    // reopen whatever was being edited, with what had been typed
+    const dr = r.drafts || {}, byId = (list, id) => (id ? list.find(x => x.id === id) : null);
+    setTimeout(() => {
+      if (dr.task) ui.task = { ref: byId(S.tasks, dr.task.refId) || undefined, draft: dr.task.d };
+      else if (dr.tx) ui.tx = { ref: byId(S.money, dr.tx.refId) || undefined, draft: dr.tx.d };
+      else if (dr.rem) ui.rem = { ref: byId(S.reminders, dr.rem.refId) || undefined, draft: dr.rem.d };
+    }, 400);
+  }
 } catch (e) {}
 if (Soc.acct) {
   loadChatCache(); socNative(); refreshMe().then(socPushSync); socConnect();
@@ -1924,9 +2076,10 @@ const TaskSheet = {
     const titleEl = ref(null);
     watch(() => ui.task, v => {
       if (!v) return;
-      Object.assign(d, { title: '', notes: '', due: null, time: '', remind: false, before: 0, priority: 0 }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : (v.preset || {}));
+      Object.assign(d, { title: '', notes: '', due: null, time: '', remind: false, before: 0, priority: 0 }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : (v.preset || {}), v.draft || {});
       if (!v.ref) nextTick(() => setTimeout(() => titleEl.value && titleEl.value.focus(), 250));
     });
+    Drafts.task = () => (ui.task ? { refId: ui.task.ref && ui.task.ref.id, d: JSON.parse(JSON.stringify(d)) } : null);
     const isEdit = computed(() => ui.task && ui.task.ref);
     const need = ref(false);
     watch(() => d.title, () => { need.value = false; });
@@ -1987,9 +2140,10 @@ const TxSheet = {
     const d = reactive({});
     watch(() => ui.tx, v => {
       if (!v) return;
-      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null, acct: S.accounts.length ? S.accounts[0].id : '' }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {});
+      Object.assign(d, { type: 'out', amount: 0, cat: 'food', note: '', date: R.today, time: '', pending: false, bank: '', card: '', balance: null, acct: S.accounts.length ? S.accounts[0].id : '' }, v.ref ? JSON.parse(JSON.stringify(v.ref)) : {}, v.draft || {});
       need.value = '';
     });
+    Drafts.tx = () => (ui.tx ? { refId: ui.tx.ref && ui.tx.ref.id, d: JSON.parse(JSON.stringify(d)) } : null);
     const isEdit = computed(() => ui.tx && ui.tx.ref);
     const cats = computed(() => catsFor(d.type === 'in' ? 'in' : 'out'));
     // the person's own categories, with any emoji
@@ -2753,18 +2907,29 @@ const NotesView = {
     const pinned = computed(() => list.value.filter(n => n.pinned));
     const others = computed(() => list.value.filter(n => !n.pinned));
     function edit(n) { cur.value = n || null; Object.assign(d, n ? { title: n.title, body: n.body, color: n.color, pinned: n.pinned } : { title: '', body: '', color: '', pinned: false }); open.value = true; }
-    function close() {
+    // save while typing, so an app reload, crash or update never loses a half-written note
+    function commit() {
       const has = d.title.trim() || d.body.trim();
-      if (cur.value) {
-        if (!has) { const i = S.notes.indexOf(cur.value); S.notes.splice(i, 1); }
-        else if (cur.value.title !== d.title || cur.value.body !== d.body || cur.value.color !== d.color || cur.value.pinned !== d.pinned) Object.assign(cur.value, { ...d, updated: Date.now() });
-      } else if (has) S.notes.unshift({ id: uid(), ...d, updated: Date.now() });
+      if (!has) return;
+      if (!cur.value) { cur.value = { id: uid(), ...d, updated: Date.now() }; S.notes.unshift(cur.value); cur.value = S.notes[0]; return; }
+      if (cur.value.title !== d.title || cur.value.body !== d.body || cur.value.color !== d.color || cur.value.pinned !== d.pinned) Object.assign(cur.value, { ...d, updated: Date.now() });
+    }
+    let commitT;
+    watch(d, () => { if (open.value) { clearTimeout(commitT); commitT = setTimeout(commit, 400); } });
+    onBeforeUnmount(() => { clearTimeout(commitT); if (open.value) commit(); });
+    function close() {
+      clearTimeout(commitT);
+      const has = d.title.trim() || d.body.trim();
+      if (!has && cur.value) { const i = S.notes.indexOf(cur.value); if (i >= 0) S.notes.splice(i, 1); }
+      else commit();
       open.value = false;
     }
     function remove() {
+      clearTimeout(commitT);
       const n = cur.value; open.value = false;
       if (!n) return;
-      const i = S.notes.indexOf(n); S.notes.splice(i, 1);
+      const i = S.notes.indexOf(n); if (i < 0) return;
+      S.notes.splice(i, 1);
       say('Note deleted', () => S.notes.splice(i, 0, n));
     }
     const nc = c => (c ? 'color-mix(in srgb, ' + c + ' 16%, var(--surface))' : '');
@@ -4334,10 +4499,12 @@ const RemSheet = {
     watch(() => ui.rem, v => {
       if (!v) return;
       need.value = ''; emojiOpen.value = false;
-      if (v.ref) { Object.assign(d, newReminder(), JSON.parse(JSON.stringify(v.ref))); picking.value = false; }
+      if (v.ref) { Object.assign(d, newReminder(), JSON.parse(JSON.stringify(v.ref)), v.draft || {}); picking.value = false; }
       else if (v.tpl) { Object.assign(d, newReminder(v.tpl)); picking.value = false; }
+      else if (v.draft) { Object.assign(d, newReminder(), v.draft); picking.value = false; }
       else picking.value = true;
     });
+    Drafts.rem = () => (ui.rem && !picking.value ? { refId: ui.rem.ref && ui.rem.ref.id, d: JSON.parse(JSON.stringify(d)) } : null);
     const templates = computed(() => REM_TEMPLATES.filter(t => !(t.water && S.reminders.some(r => r.water))));
     function useTpl(t) { Object.assign(d, newReminder(t)); picking.value = false; Native.vibrate(6); }
     const EVERY = [15, 20, 30, 45, 60, 90, 120, 180, 240];
@@ -4526,26 +4693,54 @@ const RemindersView = {
 
 const SettingsView = {
   setup() {
-    const imp = ref(false), txt = ref(''), reset = ref(false);
+    const imp = ref(false), txt = ref(''), reset = ref(false), exp = ref(false), pick = ref(MODULES.map(m => m.id));
+    const prev = ref(null), err = ref(''), undoAt = ref(restoreUndoAt());
     const budgetStr = computed({
       get: () => (S.settings.budget ? fmt(S.settings.budget) : ''),
       set: v => { S.settings.budget = parseInt(toEn(v).replace(/\D/g, '') || '0', 10); },
     });
-    function exportData() { Native.share(JSON.stringify({ app: 'orbit', v: 1, at: new Date().toISOString(), data: S })); }
-    function importData() {
-      try {
-        const j = JSON.parse(txt.value.trim());
-        const data = hydrate(j.data || j);
-        if (!Array.isArray(data.tasks)) throw 0;
-        Object.keys(data).forEach(k => { S[k] = data[k]; });
-        S.settings.onboarded = true;
-        imp.value = false; txt.value = '';
-        say('Backup restored ✅');
-      } catch (e) { say('That doesn\'t look like an Orbit backup'); }
+    function exportData() {
+      if (!pick.value.length) return;
+      Native.shareFile('orbit-backup-' + R.today + '.json', 'application/json', makeBackup(pick.value));
+      exp.value = false;
     }
-    function resetAll() { const d = defaults(); Object.keys(d).forEach(k => { S[k] = d[k]; }); reset.value = false; nav.screen = null; nav.tab = 'today'; }
+    function openImport() { prev.value = null; err.value = ''; txt.value = ''; imp.value = true; }
+    function check(text) { const b = readBackup(text); if (b.error) { err.value = b.error; prev.value = null; } else { err.value = ''; prev.value = b; } }
+    const canPickFile = !Native.has || !!(AN && AN.pickText);
+    function chooseFile() {
+      if (AN && AN.pickText) { window.orbitPickedText = t => check(t); AN.pickText(); return; }
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = '.json,application/json,text/plain'; inp.style.display = 'none';
+      inp.onchange = () => {
+        const f = inp.files && inp.files[0]; inp.remove();
+        if (!f) return;
+        if (f.size > MAX_BACKUP) { err.value = 'This file is too large to be an Orbit backup'; return; }
+        f.text().then(check, () => { err.value = 'That file couldn\'t be read'; });
+      };
+      document.body.appendChild(inp); inp.click();
+    }
+    function doRestore() {
+      const problem = applyBackup(prev.value);
+      if (problem) { err.value = problem; return; }
+      imp.value = false; undoAt.value = restoreUndoAt();
+      say('Backup restored', () => { if (undoRestore()) { undoAt.value = 0; say('Restore undone. Your previous data is back'); } });
+    }
+    function undoLast() { if (undoRestore()) { undoAt.value = 0; say('Restore undone. Your previous data is back'); } else say('There\'s nothing to undo'); }
+    function resetAll() {
+      const d = defaults(), lang = S.settings.lang;
+      try { localStorage.setItem(BEFORE_RESTORE, JSON.stringify({ at: Date.now(), state: JSON.stringify(S) })); } catch (e) {}
+      Object.keys(S).forEach(k => { if (!(k in d)) delete S[k]; });
+      Object.keys(d).forEach(k => { S[k] = d[k]; });
+      S.settings.lang = lang;
+      runMigrations(); saveNow();
+      wake.off();
+      try { localStorage.removeItem('orbit.chatcache'); } catch (e) {}
+      reset.value = false; nav.screen = null; nav.tab = 'today'; undoAt.value = restoreUndoAt();
+      say('Everything was erased', () => { if (undoRestore()) { undoAt.value = 0; say('Your data is back'); } });
+    }
+    const MODS = MODULES;
     const counts = computed(() => S.tasks.length + S.habits.length + S.notes.length + S.money.length + S.countdowns.length);
-    return { imp, txt, reset, budgetStr, exportData, importData, resetAll, counts };
+    return { imp, txt, reset, exp, pick, prev, err, undoAt, budgetStr, exportData, openImport, check, canPickFile, chooseFile, doRestore, undoLast, resetAll, counts, MODS };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <Head title="Settings"/>
@@ -4598,28 +4793,68 @@ const SettingsView = {
 
     <div class="label">Your data</div>
     <div class="settings-group">
-      <button class="list-row" style="width:100%;text-align:left" @click="exportData"><span class="bubble" style="--c:var(--c-water)"><Ic n="upload" :s="18"/></span>
-        <div class="grow"><div class="t">Export backup</div><div class="s">{{ IOS ? 'Save to Files or send via Telegram' : 'Share to Telegram, email or Files' }}</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
-      <button class="list-row" style="width:100%;text-align:left" @click="imp = true"><span class="bubble" style="--c:var(--c-habits)"><Ic n="download" :s="18"/></span>
-        <div class="grow"><div class="t">Restore backup</div><div class="s">Paste a backup you exported</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
+      <button class="list-row" style="width:100%;text-align:left" @click="exp = true"><span class="bubble" style="--c:var(--c-water)"><Ic n="upload" :s="18"/></span>
+        <div class="grow"><div class="t">Export backup</div><div class="s">A file you keep somewhere safe. Choose what goes in it</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
+      <button class="list-row" style="width:100%;text-align:left" @click="openImport"><span class="bubble" style="--c:var(--c-habits)"><Ic n="download" :s="18"/></span>
+        <div class="grow"><div class="t">Restore backup</div><div class="s">You'll see what's in it before anything changes</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
+      <button v-if="undoAt" class="list-row" style="width:100%;text-align:left" @click="undoLast"><span class="bubble" style="--c:var(--c-mood)"><Ic n="undo-2" :s="18"/></span>
+        <div class="grow"><div class="t">Undo last restore or erase</div><div class="s">Bring back your data as it was {{ ago(undoAt).toLowerCase() }}</div></div></button>
       <button class="list-row" style="width:100%;text-align:left" @click="reset = true"><span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
         <div class="grow"><div class="t" style="color:var(--c-danger)">Erase everything</div><div class="s">{{ counts }} items stored on this phone</div></div></button>
     </div>
     <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · {{ Soc.acct ? 'Everything except People stays on your device' : 'Everything stays on your device' }} 🔒</p>
 
+    <Sheet :open="exp" title="Export backup" @close="exp = false">
+      <p class="muted" style="font-size:14px;margin-bottom:12px">Choose what to include. The file contains private data (money, health), so keep it somewhere only you can open.</p>
+      <div class="settings-group" style="box-shadow:none">
+        <label v-for="m in MODS" :key="m.id" class="list-row" style="cursor:pointer"><div class="grow"><div class="t">{{ m.l }}</div></div>
+          <input type="checkbox" class="check" :value="m.id" v-model="pick"></label>
+      </div>
+      <div class="btn-row"><button class="btn" @click="pick = pick.length === MODS.length ? [] : MODS.map(m => m.id)">{{ pick.length === MODS.length ? 'Select none' : 'Select all' }}</button>
+        <button class="btn primary" :disabled="!pick.length" @click="exportData">Export</button></div>
+    </Sheet>
     <Sheet :open="imp" title="Restore backup" @close="imp = false">
-      <p class="muted" style="font-size:14px;margin-bottom:12px">Paste the backup text below. This replaces all current data.</p>
-      <textarea class="field" v-model="txt" placeholder='{"app":"orbit", ...}' style="min-height:160px;font-size:13px;font-family:monospace"></textarea>
-      <div class="btn-row"><button class="btn primary" :disabled="!txt.trim()" @click="importData">Restore</button></div>
+      <template v-if="!prev">
+        <p class="muted" style="font-size:14px;margin-bottom:12px">Pick a backup file, or paste its text. Nothing changes until you confirm.</p>
+        <button v-if="canPickFile" class="btn block" @click="chooseFile"><Ic n="download" :s="17"/>Choose backup file</button>
+        <span class="flabel">{{ canPickFile ? 'Or paste the backup text' : 'Paste the backup text' }}</span>
+        <textarea class="field" v-model="txt" placeholder='{"app":"orbit", ...}' style="min-height:130px;font-size:13px;font-family:monospace" translate="no"></textarea>
+        <div v-if="err" class="hint warn"><Ic n="circle-alert" :s="16"/><span class="grow">{{ err }}</span></div>
+        <div class="btn-row"><button class="btn primary" :disabled="!txt.trim()" @click="check(txt)">Check backup</button></div>
+      </template>
+      <template v-else>
+        <div class="card" style="box-shadow:none">
+          <div class="t" style="font-weight:700">Backup{{ prev.at ? ' from ' + gFull(keyOf(new Date(prev.at))) : '' }}</div>
+          <div class="s muted" style="font-size:13px">{{ prev.ver ? 'Made with Orbit ' + prev.ver : 'Older Orbit backup' }}</div>
+          <div v-for="m in MODS.filter(x => prev.mods.includes(x.id))" :key="m.id" class="row" style="margin-top:8px"><span class="grow">{{ m.l }}</span><b>{{ prev.counts[m.id] || 'empty' }}</b></div>
+        </div>
+        <div v-if="prev.newer" class="hint warn"><span class="grow">This backup is from a newer Orbit. Update the app first for the best result.</span></div>
+        <div v-if="prev.bad.length" class="hint warn"><span class="grow">Some parts couldn't be read and will be left out: {{ prev.bad.join(', ') }}</span></div>
+        <div v-if="prev.empty" class="hint warn"><span class="grow">This backup has no data in it.</span></div>
+        <p class="muted" style="font-size:13.5px;margin-top:12px">The parts listed above will replace what's on this phone. Everything else stays as it is. A safety copy of your current data is kept so you can undo.</p>
+        <div v-if="err" class="hint warn"><Ic n="circle-alert" :s="16"/><span class="grow">{{ err }}</span></div>
+        <div class="btn-row"><button class="btn" @click="prev = null">Back</button><button class="btn danger" style="background:var(--c-danger);color:#fff" @click="doRestore">Replace with backup</button></div>
+      </template>
     </Sheet>
     <Sheet :open="reset" title="Erase everything?" @close="reset = false">
-      <p class="muted">All tasks, habits, notes, transactions and logs on this phone will be deleted. Export a backup first if you want to keep them.</p>
-      <div class="btn-row"><button class="btn" @click="reset = false">Cancel</button><button class="btn danger" style="background:var(--c-danger);color:#fff" @click="resetAll">Erase</button></div>
+      <p class="muted">All tasks, habits, notes, transactions, cycle and other logs on this phone will be deleted. Your People account and chats on the server are not affected. You can undo right after, but export a backup first if you want to be safe.</p>
+      <div class="btn-row"><button class="btn" @click="reset = false; exp = true">Export first</button><button class="btn danger" style="background:var(--c-danger);color:#fff" @click="resetAll">Erase</button></div>
     </Sheet>
   </div>`,
 };
 
 /* ================= app shell ================= */
+function storeExport() {
+  if (Store.corrupt) {
+    let raw = ''; try { raw = localStorage.getItem(Store.corrupt) || ''; } catch (e) {}
+    if (raw) return Native.shareFile('orbit-unreadable-data-' + R.today + '.txt', 'text/plain', raw);
+  }
+  Native.shareFile('orbit-backup-' + R.today + '.json', 'application/json', makeBackup(MODULES.map(m => m.id)));
+}
+function storeDismiss() {
+  if (Store.readonly && !confirm('Start fresh? Orbit will save new data over the unreadable copy. Export it first if you want to keep it.')) return;
+  Store.readonly = false; Store.corrupt = ''; saveNow();
+}
 const App = {
   setup() {
     const kb = ref(false);
@@ -4658,6 +4893,15 @@ const App = {
     return { kb, tabs, views, current, tab, toTop };
   },
   template: `<div :class="{kb}">
+    <div v-if="Store.error || Store.corrupt" class="store-banner" role="alert">
+      <Ic n="circle-alert" :s="18"/>
+      <div class="grow">
+        <b>{{ Store.corrupt ? 'Orbit couldn\\'t read your saved data' : 'Orbit can\\'t save your changes' }}</b>
+        <span>{{ Store.corrupt ? (Store.readonly ? 'Saving is paused so nothing is overwritten. Export the old data to keep it.' : 'A copy of it was kept. You can export it, or restore a backup.') : 'This phone\\'s storage for Orbit is full. Export a backup now so nothing is lost.' }}</span>
+      </div>
+      <button class="btn sm" @click="storeExport">Export</button>
+      <button v-if="Store.corrupt" class="btn sm" @click="storeDismiss" :aria-label="Store.readonly ? 'Start fresh' : 'Dismiss'">{{ Store.readonly ? 'Start fresh' : 'OK' }}</button>
+    </div>
     <Onboarding v-if="!S.settings.onboarded"/>
     <template v-else>
       <Transition name="view" mode="out-in" @before-enter="toTop"><component :is="views[current]" :key="current === 'pair' ? 'pair:' + Soc.open : current"/></Transition>
@@ -4673,7 +4917,7 @@ const App = {
 
 const app = createApp(App);
 Object.assign(app.config.globalProperties, {
-  APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
+  Store, storeExport, storeDismiss, APP_VERSION, S, R, nav, ui, toast, Timer, Native, IOS, STANDALONE, MOODS, Rem, PUSH_SUPPORTED, remPossible, BEFORE, enablePush, disablePush, testNotify, askAndroidNotify, MODES, JM, WDL, CAT, justDone,
   pickTime, pickDate, go, say, doUndo, scheduleSync, hm, isToday, everyLabel, keyOf, fmt, short, words, mmss, rel, ago, jLabel, jFull, gLabel, gFull, parseKey, addDays,
   setLang, tr, FA, qText, Soc, REL, whoName, Upd, installUpdate, dismissUpdate, AN,
   remSummary, newReminder, REM_TEMPLATES, whenShort, clog, setClog, PHASES, catOf, catsFor, categorize, dismissTx, smsEnable, smsDisable, Sms, CATS_IN, WK, jFull, toggleTask, delTask, prioC, taskPassed, habitDue, toggleHabit, streak, addWater, setMood, togglePeriodDay,

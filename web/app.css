@@ -973,3 +973,10 @@ input[type=date], input[type=time] { -webkit-appearance: none; appearance: none;
 
 .cd-hero .cd-left { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 4px 0 2px; opacity: .95; }
 .cd .n .left { display: block; font-variant-numeric: tabular-nums; font-weight: 650; color: var(--text-2); margin-top: 2px; }
+
+/* ---------- storage health ---------- */
+.store-banner { position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 10px; padding: calc(10px + env(safe-area-inset-top)) 14px 10px; background: color-mix(in srgb, var(--c-danger) 16%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--c-danger) 40%, transparent); font-size: 13px; color: var(--text); }
+.store-banner .ic { color: var(--c-danger); flex-shrink: 0; }
+.store-banner b { display: block; font-size: 13.5px; }
+.store-banner span { color: var(--text-2); }
+input.check { width: 22px; height: 22px; accent-color: var(--acc, var(--c-tasks)); flex-shrink: 0; }
