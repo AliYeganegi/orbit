@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.20'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.21'; // single source of truth: android/build.sh reads this for the APK versionName
 const { createApp, reactive, ref, computed, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } = Vue;
 
 /* ================= utils ================= */

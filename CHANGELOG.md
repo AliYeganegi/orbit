@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (after 1.20)
+## 1.21 (web + server; Android APK pending the signing key)
 
 Not deployed yet: the iPhone/web version updates when `main` is pushed, the People server when `push/` is deployed,
 and the Android APK needs the original signing key (see "Release blockers" in `docs/REPORT.md`).
