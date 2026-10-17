@@ -28,7 +28,10 @@ their own. The first question arrives as soon as the type is agreed; after that,
 - **Live:** while the app is open, events arrive over a WebSocket (`/s/ws`).
 - **iPhone:** the reminder Web Push subscription is reused, so messages and questions arrive as push.
 - **Android:** the daily question is an exact local alarm (it's part of the reminder plan); messages, requests and
-  answers come from `SocialPoll`, a background job that checks the server about every 15 minutes.
+  answers come from `SocialPoll`, which checks the server about every 90 seconds after People was used or a message
+  arrived, every 5 minutes for the next hour, then every 15 minutes (Android may delay any of these; nothing is
+  fetched while the app is open).
+- **Safety:** blocking, sign out other phones (new login key), rate limits. Server API changes: `docs/API.md`.
 
 ## Android build
 
@@ -75,6 +78,26 @@ cd push && npm install && npm test   # crypto, scheduling, delivery and People e
 npx wrangler deploy                  # needs VAPID_PRIVATE_JWK secret: npx wrangler secret put VAPID_PRIVATE_JWK
 ```
 
-UI smoke test (every screen and sheet): `node tests/smoke.cjs http://127.0.0.1:8766/` with `web/` served locally.
+## Tests
+
+Serve `web/` locally (`cd web && python3 -m http.server 8766 --bind 127.0.0.1`), then with Playwright available
+(`PW=$(npm root -g)/@playwright/mcp/node_modules` or a local `playwright` install) and Chrome at `/usr/bin/google-chrome`
+(or `CHROME=`):
+
+| Test | Covers |
+|---|---|
+| `node tests/templates.cjs` | every screen's template compiles (catches quoting bugs that blank a screen) |
+| `node tests/smoke.cjs` | every screen and sheet opens without errors |
+| `node tests/data.cjs` | corrupt/wrong-typed storage, backup validation, partial restore + undo, quota errors, autosave, draft resume |
+| `node tests/finance.cjs` | SMS de-duplication, balances, refunds, transfers, editor validation, search, CSV |
+| `node tests/dates.cjs` | focus sessions that ended while closed, Feb 29 / 30 Esfand countdowns |
+| `node tests/native.cjs` | Android bridge contract with a stand-in `window.Android` (EN + FA) |
+| `node tests/features.cjs` | quick capture, top 3, wrap-up, Today sections, timeline, weekly review, Persian coverage |
+| `node tests/sms.test.cjs`, `node tests/sms.regress.cjs` | bank SMS parser (no browser needed) |
+| `node tests/people.cjs`, `node tests/people-safety.cjs` | People UI against a local worker (below) |
+
+`docs/AUDIT.md` is the audit, `CHANGELOG.md` the changes, `docs/REPORT.md` what is tested and what isn't,
+`docs/PHASE4.md` designs for later features.
+
 People UI test (two phones, signup to chat): `node tests/people.cjs http://127.0.0.1:8766/ http://127.0.0.1:8797` with the
 worker running locally (`npx wrangler dev --port 8797`, `ALLOWED_ORIGINS=http://127.0.0.1:8766` in `push/.dev.vars`).

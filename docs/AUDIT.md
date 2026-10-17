@@ -149,4 +149,4 @@ signing keys (section 2).
 
 ## 6. Status
 
-Kept current in `CHANGELOG.md` → "Unreleased" and the final report.
+What was fixed is in `CHANGELOG.md` → "Unreleased". What is tested, untested, open or blocked is in `docs/REPORT.md`.
