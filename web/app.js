@@ -260,9 +260,13 @@ const defaults = () => ({
     notify: { tasks: true, focus: true, chat: true, question: true },
     sms: { on: false, unit: 'rial', last: 0, since: 0 },
     waterRemind: { on: false, every: 60, start: '09:00', end: '22:00', days: [0, 1, 2, 3, 4, 5, 6], stopAtGoal: true },
+    // Today: hidden sections and their order; evening wrap-up done for this day
+    today: { hide: [], order: [] }, wrap: '',
+    // what the timeline and weekly review include (cycle only when asked for)
+    review: { money: true, cycle: false },
   },
   tasks: [], habits: [], notes: [], money: [], customCats: [], countdowns: [], cycleDays: [], cycleLog: {}, smsSeen: [], accounts: [], reminders: [],
-  water: {}, mood: {}, focusLog: {},
+  water: {}, mood: {}, focusLog: {}, reviews: {},
   timer: { mode: 'work', running: false, endAt: 0, left: 25 * 60, total: 25 * 60, count: 0, label: '' },
 });
 // Data format version. Bump it when a migration below changes the shape of saved data.
@@ -271,7 +275,7 @@ const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
 // expected type of every top-level field; anything else from storage or a restore falls back to the default
 const SHAPE = {
   tasks: 'list', habits: 'list', notes: 'list', money: 'list', customCats: 'list', countdowns: 'list', accounts: 'list', reminders: 'list',
-  cycleDays: 'strings', smsSeen: 'strings', cycleLog: 'map', water: 'map', mood: 'map', focusLog: 'map', timer: 'map', settings: 'map',
+  cycleDays: 'strings', smsSeen: 'strings', cycleLog: 'map', water: 'map', mood: 'map', focusLog: 'map', timer: 'map', settings: 'map', reviews: 'map',
 };
 /**
  * Merges saved (or restored) data over the defaults, type-checking every field so one bad value can't stop the app
@@ -295,7 +299,9 @@ function hydrate(raw, issues = []) {
   const cy = o(s.cycle);
   d.settings = { ...ds, ...s, sms: { ...ds.sms, ...o(s.sms) }, focus: { ...ds.focus, ...o(s.focus) },
     cycle: { ...ds.cycle, ...cy, pill: { ...ds.cycle.pill, ...o(cy.pill) }, tip: { ...ds.cycle.tip, ...o(cy.tip) } },
-    notify: { ...ds.notify, ...o(s.notify) }, waterRemind: { ...ds.waterRemind, ...o(s.waterRemind) } };
+    notify: { ...ds.notify, ...o(s.notify) }, waterRemind: { ...ds.waterRemind, ...o(s.waterRemind) },
+    today: { hide: Array.isArray(o(s.today).hide) ? s.today.hide : [], order: Array.isArray(o(s.today).order) ? s.today.order : [] },
+    review: { ...ds.review, ...o(s.review) } };
   d.schema = SCHEMA;
   return d;
 }
@@ -332,7 +338,7 @@ const migrate = (name, fn) => { try { fn(); } catch (e) { console.warn('migratio
 const MODULES = [
   { id: 'tasks', l: 'Tasks', keys: ['tasks'] },
   { id: 'habits', l: 'Habits', keys: ['habits'] },
-  { id: 'notes', l: 'Notes', keys: ['notes'] },
+  { id: 'notes', l: 'Notes & weekly reviews', keys: ['notes', 'reviews'] },
   { id: 'money', l: 'Money', keys: ['money', 'accounts', 'customCats', 'smsSeen'] },
   { id: 'reminders', l: 'Reminders & countdowns', keys: ['reminders', 'countdowns'] },
   { id: 'wellbeing', l: 'Water, mood & focus', keys: ['water', 'mood', 'focusLog'] },
@@ -348,7 +354,7 @@ function makeBackup(mods) {
   return JSON.stringify({ app: 'orbit', v: 2, schema: SCHEMA, appVersion: APP_VERSION, at: new Date().toISOString(), modules: mods, data });
 }
 const countOf = d => ({
-  tasks: (d.tasks || []).length, habits: (d.habits || []).length, notes: (d.notes || []).length, money: (d.money || []).length,
+  tasks: (d.tasks || []).length, habits: (d.habits || []).length, notes: (d.notes || []).length + Object.keys(d.reviews || {}).length, money: (d.money || []).length,
   reminders: (d.reminders || []).length + (d.countdowns || []).length, wellbeing: Object.keys(d.water || {}).length + Object.keys(d.mood || {}).length + Object.keys(d.focusLog || {}).length,
   cycle: (d.cycleDays || []).length + Object.keys(d.cycleLog || {}).length, settings: d.settings ? 1 : 0,
 });
@@ -440,8 +446,8 @@ runMigrations();
 
 // now: every second (timers); min: once a minute, for lists that only need minute precision
 const R = reactive({ now: Date.now(), min: Math.floor(Date.now() / 60e3) * 60e3, today: keyOf(new Date()), sysDark: Native.sysDark() });
-const nav = reactive({ tab: 'today', screen: null });
-const ui = reactive({ task: null, tx: null, accounts: null, budget: false, rem: null });
+const nav = reactive({ tab: 'today', screen: null, arg: null });
+const ui = reactive({ task: null, tx: null, accounts: null, budget: false, rem: null, capture: null });
 const toast = reactive({ msg: '', undo: null, id: 0 });
 let toastT;
 function say(msg, undo) {
@@ -460,7 +466,9 @@ function setLang(l) {
 }
 function go(screen) {
   if (screen && screen.startsWith('pair:')) { Soc.open = screen.slice(5); nav.screen = 'pair'; return; }
-  nav.screen = screen;
+  const i = screen ? screen.indexOf(':') : -1; // 'timeline:2025-10-01'
+  nav.arg = i > 0 ? screen.slice(i + 1) : null;
+  nav.screen = i > 0 ? screen.slice(0, i) : screen;
 }
 
 /* back handling (Android hardware back) */
@@ -1865,6 +1873,137 @@ window.orbitGo = where => {
 drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
 // Android switches to newly downloaded screens by reloading: save first, then come back to the same place
 // open editors register a function returning their unsaved form, so it survives the reload
+/* ================= quick capture ================= */
+// Typed text is sorted into a task, note, expense/income or reminder on the phone itself (no AI service):
+// "lunch 120k" → expense, "remind me to call mom at 18" → reminder, "buy milk tomorrow" → task.
+const CAP_OUT = /\b(spent|spend|paid|pay|bought|buy for|cost|costs)\b|خرید|خریدم|خرج|پرداخت|دادم|هزینه/i;
+const CAP_IN = /\b(got paid|received|earned|salary|income)\b|حقوق|دریافت|گرفتم|واریز شد/i;
+const CAP_REM = /^\s*(remind me( to)?|reminder:?)\s+|یادم (بنداز|باشه)|یادآوری( کن)?:?/i;
+const CAP_AMT = /(\d[\d,]*(?:\.\d+)?)\s*(k|m|t|toman|tomans|هزار|میلیون|تومن|تومان|ریال|rial)?(?![\w؀-ۿ])/i;
+function guessCapture(text, now = Date.now()) {
+  const raw = toEn(String(text || '')).trim();
+  const out = { kind: 'task', title: raw, amount: 0, due: null, time: '', why: '' };
+  if (!raw) return out;
+  let t = raw;
+  const cut = re => { const m = re.exec(t); if (m) t = (t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length)); return m; };
+  const today = keyOf(new Date(now));
+  if (cut(/\b(tomorrow)\b|فردا/i)) out.due = addDays(today, 1);
+  else if (cut(/\b(tonight)\b|امشب/i)) { out.due = today; out.time = '21:00'; }
+  else if (cut(/\b(today)\b|امروز/i)) out.due = today;
+  const tm = cut(/(?:\b(?:at|@)\s*|ساعت\s*)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i) || cut(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
+  if (tm) {
+    let h = +tm[1]; const mi = +(tm[2] || 0), ap = (tm[3] || '').toLowerCase();
+    if (ap === 'pm' && h < 12) h += 12; if (ap === 'am' && h === 12) h = 0;
+    if (h < 24 && mi < 60) out.time = pad(h) + ':' + pad(mi);
+  }
+  const clean = x => x.replace(/\s+/g, ' ').replace(/^[\s,.:\-–]+|[\s,.:\-–]+$/g, '').trim();
+  if (CAP_REM.test(t)) {
+    t = t.replace(CAP_REM, ' ');
+    out.kind = 'reminder'; out.title = clean(t); out.why = 'reminder';
+    return out;
+  }
+  const am = CAP_AMT.exec(t), unit = am && (am[2] || '').toLowerCase();
+  const isOut = CAP_OUT.test(t), isIn = CAP_IN.test(t);
+  // a bare number is only money when a money word or a unit says so ("call 3 people" stays a task)
+  if (am && (isOut || isIn || unit)) {
+    let v = parseFloat(am[1].replace(/,/g, ''));
+    if (unit === 'k' || unit === 'هزار') v *= 1e3;
+    else if (unit === 'm' || unit === 'میلیون') v *= 1e6;
+    else if (unit === 'ریال' || unit === 'rial') v /= 10;
+    if (v >= 1) {
+      t = t.slice(0, am.index) + ' ' + t.slice(am.index + am[0].length);
+      t = t.replace(CAP_OUT, ' ').replace(CAP_IN, ' ').replace(/\b(on|for|from)\b|برای|بابت/gi, ' ');
+      out.kind = isIn && !isOut ? 'in' : 'out'; out.amount = Math.round(v); out.title = clean(t); out.why = 'money';
+      return out;
+    }
+  }
+  if (/\n/.test(raw) || raw.length > 120) { out.kind = 'note'; out.title = raw; out.why = 'long'; return out; }
+  out.title = clean(t) || raw;
+  return out;
+}
+
+/* ================= timeline & weekly review ================= */
+const keysBetween = (from, n) => Array.from({ length: n }, (_, i) => addDays(from, i));
+const dayOfMs = ms => keyOf(new Date(ms));
+/** Everything that happened on a day, from every part of the app. Untimed items (habits, water, mood) have no `at`. */
+function dayTimeline(k, opt = S.settings.review) {
+  const out = [], at = (key, hhmm) => { const d = parseKey(key); const [h, m] = hhmm.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); };
+  for (const t of S.tasks) {
+    if (t.done && t.doneDay === k) out.push({ at: t.doneAt, e: '✅', t: t.title, s: 'Task done', kind: 'tasks', mine: true });
+    else if (t.created && dayOfMs(t.created) === k) out.push({ at: t.created, e: '📝', t: t.title, s: 'Task added', kind: 'tasks', mine: true });
+  }
+  for (const h of S.habits) if (h.log && h.log[k]) out.push({ e: h.emoji || '🔥', t: h.name, s: 'Habit done', kind: 'habits', mine: true });
+  const f = S.focusLog[k];
+  if (f && f.s) for (const x of f.s) out.push({ at: x.at, e: '⏱️', t: x.min + ' min focus', s: x.label || (x.done ? 'Session complete' : 'Stopped early'), kind: 'focus', mineS: !!x.label });
+  if (S.water[k]) out.push({ e: '💧', t: S.water[k] + ' glasses of water', s: S.water[k] >= S.settings.waterGoal ? 'Goal reached' : 'Water', kind: 'water' });
+  const md = S.mood[k];
+  if (md && MOODS[md.v - 1]) out.push({ e: MOODS[md.v - 1].e, t: 'Feeling ' + MOODS[md.v - 1].l.toLowerCase(), s: md.note || 'Mood', kind: 'mood', mineS: !!md.note });
+  if (opt.money) for (const x of S.money) {
+    if (x.date !== k || x.pending) continue;
+    const ts = x.time ? at(k, x.time) : x.created && dayOfMs(x.created) === k ? x.created : null;
+    const sign = x.type === 'transfer' ? '' : x.type === 'in' ? '+' : '−';
+    out.push({ at: ts, e: txIcon(x).e, t: sign + fmt(x.amount) + ' T', s: x.note || (x.type === 'transfer' ? acctName(x.acct) + ' → ' + acctName(x.acct2) : catOf(x.cat).l), kind: 'money', mineS: !!x.note });
+  }
+  for (const n of S.notes) if (n.updated && dayOfMs(n.updated) === k) out.push({ at: n.updated, e: '🗒️', t: n.title || clip(n.body, 40) || 'Note', s: 'Note', kind: 'notes', mine: true });
+  if (opt.cycle) {
+    if (S.cycleDays.includes(k)) out.push({ e: '🌸', t: 'Period day', s: 'Cycle', kind: 'cycle' });
+    else if (S.cycleLog[k] && Object.keys(S.cycleLog[k]).length) out.push({ e: '🌸', t: 'Cycle log', s: 'Cycle', kind: 'cycle' });
+  }
+  const timed = out.filter(x => x.at).sort((a, b) => a.at - b.at), untimed = out.filter(x => !x.at);
+  return { timed, untimed, total: out.length };
+}
+const WEEK_DAYS = 7;
+/** The 7 days ending on `end`, summarised. */
+function weekStats(end, opt = S.settings.review) {
+  const start = addDays(end, -(WEEK_DAYS - 1)), days = keysBetween(start, WEEK_DAYS), inWeek = k => k >= start && k <= end;
+  const tasksDone = S.tasks.filter(t => t.done && t.doneDay && inWeek(t.doneDay)).length;
+  const tasksAdded = S.tasks.filter(t => t.created && inWeek(dayOfMs(t.created))).length;
+  const stillOpen = S.tasks.filter(t => !t.done && t.due && t.due <= end).length;
+  const habits = S.habits.map(h => {
+    const due = days.filter(k => habitDue(h, k) && (!h.created || k >= dayOfMs(h.created)));
+    const done = due.filter(k => h.log && h.log[k]).length;
+    return { h, due: due.length, done, pct: due.length ? done / due.length : null };
+  }).filter(x => x.due);
+  const hDue = habits.reduce((n, x) => n + x.due, 0), hDone = habits.reduce((n, x) => n + x.done, 0);
+  let focusMin = 0, focusN = 0, waterSum = 0, waterDays = 0, goalDays = 0, moodSum = 0, moodN = 0;
+  for (const k of days) {
+    const f = S.focusLog[k]; if (f) { focusMin += f.min || 0; focusN += f.n || 0; }
+    const w = S.water[k] || 0; if (w) { waterSum += w; waterDays++; if (w >= S.settings.waterGoal) goalDays++; }
+    const m = S.mood[k]; if (m && m.v) { moodSum += m.v; moodN++; }
+  }
+  const r = { start, end, days, tasksDone, tasksAdded, stillOpen, habits, habitPct: hDue ? hDone / hDue : null,
+    focusMin, focusN, waterAvg: waterDays ? waterSum / WEEK_DAYS : 0, goalDays, moodAvg: moodN ? moodSum / moodN : null, moodN };
+  if (opt.money) {
+    const list = S.money.filter(x => inWeek(x.date));
+    const cats = Object.entries(spendByCat(list)).sort((a, b) => b[1] - a[1]);
+    r.money = { spent: sumSpend(list), income: sumIncome(list), top: cats[0] ? { cat: catOf(cats[0][0]), v: cats[0][1] } : null, review: list.filter(x => x.pending).length };
+  }
+  if (opt.cycle) r.cycle = { periodDays: days.filter(k => S.cycleDays.includes(k)).length };
+  return r;
+}
+/** Habit patterns over the last 4 weeks: completion per weekday, and which habits are slipping. */
+function habitInsights(end = R.today) {
+  const days = keysBetween(addDays(end, -27), 28), by = Array.from({ length: 7 }, () => ({ due: 0, done: 0 }));
+  const per = [];
+  for (const h of S.habits) {
+    let due = 0, done = 0;
+    for (const k of days) {
+      if (!habitDue(h, k) || (h.created && k < dayOfMs(h.created))) continue;
+      const w = satIdx(k), ok = !!(h.log && h.log[k]);
+      due++; by[w].due++; if (ok) { done++; by[w].done++; }
+    }
+    if (due >= 4) per.push({ h, pct: done / due, streak: streak(h) });
+  }
+  const week = by.map((x, i) => ({ i, pct: x.due ? x.done / x.due : null }));
+  const known = week.filter(x => x.pct != null && by[x.i].due >= 2);
+  const best = known.length > 1 ? known.reduce((a, b) => (b.pct > a.pct ? b : a)) : null;
+  const worst = known.length > 1 ? known.reduce((a, b) => (b.pct < a.pct ? b : a)) : null;
+  per.sort((a, b) => b.pct - a.pct);
+  return { week, best: best && worst && best.pct - worst.pct >= 0.15 ? best : null, worst: best && worst && best.pct - worst.pct >= 0.15 ? worst : null,
+    strong: per.filter(x => x.pct >= 0.8).slice(0, 3), slipping: per.filter(x => x.pct < 0.5).slice(-3).reverse() };
+}
+const WEEKDAY_NAMES = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
 const Drafts = {};
 window.orbitBeforeReload = () => {
   saveNow(); saveChatCache();
@@ -1883,6 +2022,7 @@ try {
       if (dr.task) ui.task = { ref: byId(S.tasks, dr.task.refId) || undefined, draft: dr.task.d };
       else if (dr.tx) ui.tx = { ref: byId(S.money, dr.tx.refId) || undefined, draft: dr.tx.d };
       else if (dr.rem) ui.rem = { ref: byId(S.reminders, dr.rem.refId) || undefined, draft: dr.rem.d };
+      else if (dr.capture) ui.capture = { draft: dr.capture.d };
     }, 400);
   }
 } catch (e) {}
@@ -2439,6 +2579,225 @@ const Onboarding = {
 };
 
 /* ================= views ================= */
+const TODAY_SECTIONS = [
+  { id: 'wrap', l: 'Evening wrap-up & weekly review', n: 'moon-star' },
+  { id: 'people', l: 'People', n: 'users' },
+  { id: 'upcoming', l: 'Coming up', n: 'clock' },
+  { id: 'tasks', l: 'Today\'s tasks', n: 'circle-check' },
+  { id: 'habits', l: 'Habits', n: 'flame' },
+  { id: 'tiles', l: 'Water, mood, focus & money', n: 'layout-grid' },
+  { id: 'extras', l: 'Cycle & countdown', n: 'hourglass' },
+  { id: 'recent', l: 'Recently', n: 'activity' },
+  { id: 'pinned', l: 'Pinned notes', n: 'pin' },
+];
+const TodaySections = {
+  setup() {
+    const st = S.settings.today;
+    const rows = computed(() => {
+      const ids = TODAY_SECTIONS.map(x => x.id);
+      const order = [...st.order.filter(id => ids.includes(id)), ...ids.filter(id => !st.order.includes(id))];
+      return order.map(id => TODAY_SECTIONS.find(x => x.id === id));
+    });
+    function move(i, d) {
+      const ids = rows.value.map(x => x.id), j = i + d;
+      if (j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]]; st.order = ids; Native.vibrate(6);
+    }
+    const shown = id => st.hide.indexOf(id) < 0;
+    function toggle(id) { const i = st.hide.indexOf(id); if (i >= 0) st.hide.splice(i, 1); else st.hide.push(id); }
+    function reset() { st.order = []; st.hide = []; }
+    return { rows, move, shown, toggle, reset };
+  },
+  template: `<div class="settings-group" style="box-shadow:none">
+    <div v-for="(x, i) in rows" :key="x.id" class="list-row">
+      <span class="bubble" style="--c:var(--c-tasks)"><Ic :n="x.n" :s="17"/></span>
+      <div class="grow"><div class="t">{{ x.l }}</div></div>
+      <button class="icon-btn plain" :disabled="i === 0" @click="move(i, -1)" :aria-label="'Move up: ' + x.l"><Ic n="chevron-up" :s="18"/></button>
+      <button class="icon-btn plain" :disabled="i === rows.length - 1" @click="move(i, 1)" :aria-label="'Move down: ' + x.l"><Ic n="chevron-down" :s="18"/></button>
+      <Toggle :model-value="shown(x.id)" @update:model-value="toggle(x.id)"/>
+    </div>
+  </div>
+  <button class="link-btn" style="margin-top:10px" @click="reset">Reset to default</button>`,
+};
+
+const CAPTURE_KINDS = [
+  { id: 'task', l: 'Task', n: 'circle-check', c: 'var(--c-tasks)' },
+  { id: 'note', l: 'Note', n: 'notebook-pen', c: 'var(--c-notes)' },
+  { id: 'out', l: 'Expense', n: 'arrow-up-right', c: 'var(--c-money)' },
+  { id: 'in', l: 'Income', n: 'arrow-down-left', c: 'var(--c-money)' },
+  { id: 'reminder', l: 'Reminder', n: 'bell', c: 'var(--c-mood)' },
+];
+/** One box for anything: typed text is sorted into the right place, and you can change where it goes before saving. */
+const CaptureSheet = {
+  setup() {
+    const text = ref(''), kind = ref('task'), picked = ref(false);
+    watch(() => ui.capture, v => { if (v) { text.value = (v.draft && v.draft.text) || ''; picked.value = !!(v.draft && v.draft.kind); kind.value = (v.draft && v.draft.kind) || 'task'; } });
+    Drafts.capture = () => (ui.capture && text.value.trim() ? { d: { text: text.value, kind: picked.value ? kind.value : '' } } : null);
+    const g = computed(() => guessCapture(text.value, R.min));
+    watch(() => g.value.kind, k => { if (!picked.value) kind.value = k; }, { immediate: true });
+    function pick(k) { kind.value = k; picked.value = true; Native.vibrate(6); }
+    // what will happen, before it happens
+    const plan = computed(() => {
+      const x = g.value, k = kind.value, title = x.title || text.value.trim();
+      if (!text.value.trim()) return '';
+      if (k === 'task') return 'Task' + (x.due ? ' · ' + rel(x.due) : '') + (x.time ? ' · ' + x.time : '');
+      if (k === 'note') return 'Note';
+      if (k === 'out' || k === 'in') return (k === 'in' ? 'Income' : 'Expense') + (x.amount ? ' · ' + fmt(x.amount) + ' T' : '') + ' · pick a category next';
+      const when = remWhen(x);
+      return 'Reminder · ' + rel(when.date) + ' · ' + when.time;
+    });
+    function remWhen(x) {
+      const now = new Date(R.now);
+      let date = x.due || R.today, time = x.time;
+      if (!time) { const soon = new Date(now.getTime() + 3600e3); time = pad(soon.getHours()) + ':00'; if (soon.getDate() !== now.getDate()) date = addDays(date, 1); }
+      if (date === R.today && time <= hm(now.getTime())) date = addDays(date, 1); // that time already passed today
+      return { date, time };
+    }
+    function save() {
+      const raw = text.value.trim(); if (!raw) return;
+      const x = g.value, k = kind.value, title = (x.title || raw).slice(0, 200);
+      if (k === 'task') {
+        const t = addTask(title, x.due || (x.time ? R.today : null)); if (x.time) t.time = x.time;
+        say('Task added' + (x.due ? ' · ' + rel(x.due) : ''), () => { const i = S.tasks.indexOf(t); if (i >= 0) S.tasks.splice(i, 1); });
+      } else if (k === 'note') {
+        const lines = raw.split('\n'), first = lines[0].trim();
+        const n = { id: uid(), title: lines.length > 1 && first.length <= 60 ? first : '', body: lines.length > 1 && first.length <= 60 ? lines.slice(1).join('\n').trim() : raw, color: '', pinned: false, updated: Date.now() };
+        S.notes.unshift(n);
+        say('Note saved', () => { const i = S.notes.indexOf(S.notes.find(y => y.id === n.id)); if (i >= 0) S.notes.splice(i, 1); });
+      } else if (k === 'out' || k === 'in') {
+        ui.capture = null; text.value = '';
+        ui.tx = { draft: { type: k, amount: x.amount || 0, note: x.amount ? title : '', date: x.due && x.due <= R.today ? x.due : R.today } };
+        return;
+      } else {
+        const w = remWhen(x);
+        const r = { ...newReminder(), kind: 'once', title, emoji: '⏰', date: w.date, time: w.time };
+        S.reminders.push(r);
+        if (Native.has) Native.askNotify();
+        say('Reminder set · ' + rel(w.date) + ' ' + w.time, () => { const i = S.reminders.indexOf(S.reminders.find(y => y.id === r.id)); if (i >= 0) S.reminders.splice(i, 1); });
+      }
+      Native.vibrate(12);
+      ui.capture = null; text.value = '';
+    }
+    return { text, kind, pick, plan, save, KINDS: CAPTURE_KINDS };
+  },
+  template: `<Sheet :open="!!ui.capture" title="Quick capture" @close="ui.capture = null">
+    <textarea class="field capture-in" v-model="text" placeholder="Buy milk tomorrow · lunch 120k · remind me to call mom at 18" rows="3" enterkeyhint="done" @keydown.enter.exact.prevent="save" autofocus></textarea>
+    <div class="chips capture-kinds" role="radiogroup" aria-label="Save as">
+      <button v-for="k in KINDS" :key="k.id" class="chip" :class="{on: kind === k.id}" :style="{'--c': k.c}" role="radio" :aria-checked="kind === k.id" @click="pick(k.id)"><Ic :n="k.n" :s="15"/>{{ k.l }}</button>
+    </div>
+    <div v-if="plan" class="capture-plan" aria-live="polite"><Ic n="sparkles" :s="15"/><span>{{ plan }}</span></div>
+    <p class="fine" style="margin-top:6px">Sorted on this phone. Nothing you type is sent anywhere.</p>
+    <button class="btn primary block" style="margin-top:14px" :disabled="!text.trim()" @click="save">{{ kind === 'out' || kind === 'in' ? 'Continue' : 'Save' }}</button>
+  </Sheet>`,
+};
+
+/** A day at a glance: everything you did, in order. */
+const TimelineView = {
+  setup() {
+    const day = ref(nav.arg && /^\d{4}-\d\d-\d\d$/.test(nav.arg) ? nav.arg : R.today);
+    const tl = computed(() => { R.min; return dayTimeline(day.value); });
+    const step = n => { const k = addDays(day.value, n); if (k <= R.today) day.value = k; Native.vibrate(6); };
+    return { day, tl, step };
+  },
+  template: `<div class="view" style="--acc:var(--c-tasks)">
+    <Head title="Timeline" sub="Everything from one day, in order"/>
+    <div class="day-nav card">
+      <button class="icon-btn plain" @click="step(-1)" aria-label="Previous day"><Ic :n="FA ? 'chevron-right' : 'chevron-left'" :s="20"/></button>
+      <div class="grow" style="text-align:center"><b>{{ isToday(parseKey(day).getTime()) ? 'Today' : gFull(day) }}</b><div class="muted" style="font-size:13px">{{ jFull(day) }}</div></div>
+      <button class="icon-btn plain" :disabled="day >= R.today" @click="step(1)" aria-label="Next day"><Ic :n="FA ? 'chevron-left' : 'chevron-right'" :s="20"/></button>
+    </div>
+    <div v-if="tl.untimed.length" class="card">
+      <div class="sec" style="margin-bottom:6px"><h3>During the day</h3></div>
+      <div v-for="(x, i) in tl.untimed" :key="'u' + i" class="tl-row"><span class="e">{{ x.e }}</span>
+        <div class="grow"><div class="t" :translate="x.mine ? 'no' : null">{{ x.t }}</div><div class="s" :translate="x.mineS ? 'no' : null">{{ x.s }}</div></div></div>
+    </div>
+    <div v-if="tl.timed.length" class="card tl">
+      <div v-for="(x, i) in tl.timed" :key="'t' + i" class="tl-row timed"><span class="when">{{ hm(x.at) }}</span><span class="e">{{ x.e }}</span>
+        <div class="grow"><div class="t" :translate="x.mine ? 'no' : null">{{ x.t }}</div><div class="s" :translate="x.mineS ? 'no' : null">{{ x.s }}</div></div></div>
+    </div>
+    <div v-if="!tl.total" class="card muted" style="text-align:center;padding:28px 18px">Nothing logged on this day.</div>
+    <p class="fine" style="margin:10px 4px"><span>{{ S.settings.review.cycle ? 'Includes cycle days.' : 'Cycle entries are not shown here.' }}</span> <span v-if="!S.settings.review.money">Money is hidden.</span> <span>Change this in Weekly review.</span></p>
+  </div>`,
+};
+
+/** Seven days summarised, with a few honest patterns and room for your own notes. */
+const ReviewView = {
+  setup() {
+    const back = ref(0); // weeks back from now
+    const end = computed(() => addDays(R.today, -7 * back.value));
+    const w = computed(() => weekStats(end.value));
+    const prev = computed(() => weekStats(addDays(end.value, -7)));
+    const ins = computed(() => habitInsights(end.value));
+    const rec = computed(() => S.reviews[w.value.start] || {});
+    const field = k => ({ get: () => rec.value[k] || '', set: v => { const r = S.reviews[w.value.start] || (S.reviews[w.value.start] = {}); r[k] = v; r.at = Date.now(); } });
+    const good = computed(field('good')), change = computed(field('change')), next = computed(field('next'));
+    const delta = (a, b) => (b ? Math.round(((a - b) / b) * 100) : null);
+    const pctTxt = v => (v == null ? '–' : Math.round(v * 100) + '%');
+    const vsPrev = (a, b) => (a > b ? (a - b) + ' more than the week before' : a < b ? (b - a) + ' fewer than the week before' : 'Same as the week before');
+    const DAYS_FA = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه'];
+    // a whole sentence, so the Persian can have its own word order
+    const weekLine = computed(() => {
+      const i = ins.value; if (!i.best) return '';
+      const d = FA ? DAYS_FA : WEEKDAY_NAMES, a = pctTxt(i.best.pct), z = pctTxt(i.worst.pct);
+      return FA ? 'بیشترین پایبندی‌ات به عادت‌ها ' + d[i.best.i] + ' است (' + a + ') و کمترینش ' + d[i.worst.i] + ' (' + z + ').'
+        : 'You keep habits best on ' + d[i.best.i] + ' (' + a + ') and least on ' + d[i.worst.i] + ' (' + z + ').';
+    });
+    return { back, end, w, prev, ins, good, change, next, delta, pctTxt, vsPrev, weekLine, WEEKDAY_NAMES };
+  },
+  template: `<div class="view" style="--acc:var(--c-habits)">
+    <Head title="Weekly review" sub="The last 7 days, at a glance"/>
+    <div class="day-nav card">
+      <button class="icon-btn plain" @click="back++" aria-label="Earlier week"><Ic :n="FA ? 'chevron-right' : 'chevron-left'" :s="20"/></button>
+      <div class="grow" style="text-align:center"><b>{{ back ? gLabel(w.start) + ' – ' + gLabel(w.end) : 'This week' }}</b><div class="muted" style="font-size:13px">{{ jLabel(w.start) }} – {{ jLabel(w.end) }}</div></div>
+      <button class="icon-btn plain" :disabled="!back" @click="back--" aria-label="Later week"><Ic :n="FA ? 'chevron-left' : 'chevron-right'" :s="20"/></button>
+    </div>
+
+    <div class="review-grid">
+      <div class="card stat"><div class="k">Tasks done</div><div class="v">{{ w.tasksDone }}</div><div class="d" v-if="prev.tasksDone || w.tasksDone">{{ vsPrev(w.tasksDone, prev.tasksDone) }}</div></div>
+      <div class="card stat"><div class="k">Habits kept</div><div class="v">{{ pctTxt(w.habitPct) }}</div><div class="d" v-if="prev.habitPct != null && w.habitPct != null">was {{ pctTxt(prev.habitPct) }}</div></div>
+      <div class="card stat"><div class="k">Focus</div><div class="v">{{ w.focusMin }} <small>min</small></div><div class="d">{{ w.focusN }} session{{ w.focusN === 1 ? '' : 's' }}</div></div>
+      <div class="card stat"><div class="k">Water</div><div class="v">{{ w.waterAvg.toFixed(1) }} <small>a day</small></div><div class="d">goal met {{ w.goalDays }} of 7 days</div></div>
+      <div class="card stat"><div class="k">Mood</div><div class="v">{{ w.moodAvg ? MOODS[Math.round(w.moodAvg) - 1].e : '–' }}</div><div class="d">{{ w.moodN ? 'logged ' + w.moodN + ' of 7 days' : 'not logged' }}</div></div>
+      <div v-if="w.money" class="card stat"><div class="k">Spent</div><div class="v">{{ short(w.money.spent) }} <small>T</small></div><div class="d" translate="no" v-if="w.money.top">{{ w.money.top.cat.e }} {{ tr(w.money.top.cat.l) }} {{ short(w.money.top.v) }}</div></div>
+      <div v-if="w.cycle" class="card stat"><div class="k">Period days</div><div class="v">{{ w.cycle.periodDays }}</div><div class="d">estimates only</div></div>
+    </div>
+    <div v-if="w.stillOpen" class="card muted" style="font-size:14px">{{ w.stillOpen }} task{{ w.stillOpen > 1 ? 's are' : ' is' }} still open from this week or earlier.</div>
+    <div v-if="w.money && w.money.review" class="card muted" style="font-size:14px">{{ w.money.review }} bank SMS draft{{ w.money.review > 1 ? 's' : '' }} still to review in Money.</div>
+
+    <div class="card" v-if="w.habits.length">
+      <div class="sec" style="margin-bottom:6px"><h3><Ic n="flame" :s="16" style="color:var(--c-habits)"/>Habits this week</h3></div>
+      <div v-for="x in w.habits" :key="x.h.id" class="hab-row"><span class="e">{{ x.h.emoji }}</span><span class="grow" translate="no">{{ x.h.name }}</span>
+        <span class="bar" style="width:80px"><i :style="{width: (x.pct * 100) + '%', background: x.h.color}"></i></span><span class="n">{{ x.done }}/{{ x.due }}</span></div>
+    </div>
+
+    <div class="card" v-if="S.habits.length">
+      <div class="sec" style="margin-bottom:6px"><h3><Ic n="lightbulb" :s="16" style="color:var(--c-mood)"/>Patterns from the last 4 weeks</h3></div>
+      <div class="wk-bars" role="img" :aria-label="'Habit completion by weekday'">
+        <div v-for="d in ins.week" :key="d.i" class="wk-bar"><span class="col"><i :style="{height: ((d.pct || 0) * 100) + '%'}"></i></span><small>{{ WK[d.i] }}</small></div>
+      </div>
+      <p v-if="weekLine" class="ins" translate="no">{{ weekLine }}</p>
+      <p v-for="x in ins.strong" :key="'s' + x.h.id" class="ins">💪 <span translate="no">{{ x.h.emoji }} {{ x.h.name }}</span> · <span>{{ pctTxt(x.pct) }} of days</span><template v-if="x.streak > 2"> · <span>{{ x.streak }}-day streak</span></template></p>
+      <p v-for="x in ins.slipping" :key="'w' + x.h.id" class="ins">🌱 <span translate="no">{{ x.h.emoji }} {{ x.h.name }}</span> · <span>{{ pctTxt(x.pct) }} of days</span> · <span>Maybe fewer days a week would fit better?</span></p>
+      <p v-if="!ins.best && !ins.strong.length && !ins.slipping.length" class="ins muted">Keep logging for a couple of weeks and patterns will show up here.</p>
+    </div>
+
+    <div class="card">
+      <div class="sec" style="margin-bottom:6px"><h3><Ic n="pencil" :s="16"/>Your notes</h3></div>
+      <span class="flabel">What went well?</span><textarea class="field" v-model="good" rows="2" translate="no"></textarea>
+      <span class="flabel">What would you change?</span><textarea class="field" v-model="change" rows="2" translate="no"></textarea>
+      <span class="flabel">One focus for next week</span><input class="field" v-model="next" translate="no" enterkeyhint="done">
+      <p class="fine" style="margin-top:8px">Saved on this phone with your other data, and included in backups.</p>
+    </div>
+
+    <div class="label">Include</div>
+    <div class="settings-group">
+      <div class="list-row"><span class="bubble" style="--c:var(--c-money)"><Ic n="wallet" :s="18"/></span><div class="grow"><div class="t">Money</div><div class="s">Spending in the review and timeline</div></div><Toggle v-model="S.settings.review.money"/></div>
+      <div class="list-row"><span class="bubble" style="--c:var(--c-cycle)"><Ic n="flower-2" :s="18"/></span><div class="grow"><div class="t">Cycle</div><div class="s">Off unless you turn it on</div></div><Toggle v-model="S.settings.review.cycle"/></div>
+    </div>
+    <button class="btn block" style="margin-top:14px" @click="go('timeline')"><Ic n="clock" :s="17"/>Open today's timeline</button>
+  </div>`,
+};
+
 const TodayView = {
   setup() {
     const q = ref('');
@@ -2465,6 +2824,33 @@ const TodayView = {
       return [...open, ...done].slice(0, 6);
     });
     const openCount = computed(() => rel.value.filter(t => !t.done).length);
+    // up to three things that matter most today
+    const top = computed(() => S.tasks.filter(t => t.top === R.today && (!t.done || t.doneDay === R.today)));
+    const rest = computed(() => list.value.filter(t => t.top !== R.today));
+    function star(t) {
+      if (t.top === R.today) { t.top = null; Native.vibrate(6); return; }
+      if (top.value.filter(x => !x.done).length >= 3) { say('You already have 3 top tasks. Unstar one first'); return; }
+      t.top = R.today; Native.vibrate(10);
+    }
+    // sections can be hidden and reordered (Customize)
+    const sections = computed(() => {
+      const st = S.settings.today, ids = TODAY_SECTIONS.map(x => x.id);
+      const order = [...st.order.filter(id => ids.includes(id)), ...ids.filter(id => !st.order.includes(id))];
+      return order.filter(id => !st.hide.includes(id));
+    });
+    const custom = ref(false);
+    // evening wrap-up: what's left, and how the day felt
+    const wrapOpen = computed(() => rel.value.filter(t => !t.done && t.due <= R.today));
+    const showWrap = computed(() => hour.value >= 19 && S.settings.wrap !== R.today && (wrapOpen.value.length > 0 || !S.mood[R.today]));
+    function toTomorrow(t) { t.due = addDays(R.today, 1); if (t.top === R.today) t.top = null; Native.vibrate(8); }
+    function allTomorrow() {
+      const moved = wrapOpen.value.map(t => [t, t.due, t.top]);
+      moved.forEach(([t]) => toTomorrow(t));
+      say(moved.length + ' moved to tomorrow', () => moved.forEach(([t, due, tp]) => { t.due = due; t.top = tp; }));
+    }
+    function wrapDone() { S.settings.wrap = R.today; say('Good night 🌙'); }
+    // a nudge to look back at the week, on its last day (Friday), if not done yet
+    const reviewNudge = computed(() => new Date(R.min).getDay() === 5 && !S.reviews[addDays(R.today, -6)]);
     function addQuick() { if (!q.value.trim()) return; addTask(q.value, R.today); q.value = ''; }
     const mood = computed(() => S.mood[R.today]);
     const nextCd = computed(() => cdSorted.value.find(x => x.days >= 0));
@@ -2492,14 +2878,15 @@ const TodayView = {
     });
     const recent = computed(() => {
       const since = R.min - 24 * 3600e3, out = [];
-      for (const t of S.tasks) if (t.done && t.doneAt > since) out.push({ at: t.doneAt, e: '✅', t: t.title });
-      for (const x of S.money) if (x.created > since && !x.pending) out.push({ at: x.created, e: catOf(x.cat).e, t: (x.type === 'in' ? '+' : '−') + fmt(x.amount) + ' T' + (x.note ? ' · ' + x.note : ' · ' + catOf(x.cat).l) });
-      for (const p of socPairs.value) if (p.last && p.last.by !== (Soc.acct && Soc.acct.handle) && p.last.at > since && !p.last.deleted) out.push({ at: p.last.at, e: p.with.emoji || '💬', t: whoName(p.with) + ': ' + clip(p.last.text || '📷 Photo', 50), go: () => go('pair:' + p.id) });
+      for (const t of S.tasks) if (t.done && t.doneAt > since) out.push({ at: t.doneAt, e: '✅', t: t.title, mine: true });
+      for (const x of S.money) if (x.created > since && !x.pending) out.push({ at: x.created, e: catOf(x.cat).e, t: (x.type === 'in' ? '+' : '−') + fmt(x.amount) + ' T', n: x.note || '', l: x.note ? '' : catOf(x.cat).l });
+      for (const p of socPairs.value) if (p.last && p.last.by !== (Soc.acct && Soc.acct.handle) && p.last.at > since && !p.last.deleted) out.push({ at: p.last.at, e: p.with.emoji || '💬', t: whoName(p.with) + ': ' + clip(p.last.text || '📷 Photo', 50), mine: true, go: () => go('pair:' + p.id) });
       const hd = S.habits.filter(h => h.log[R.today]);
       if (hd.length) out.push({ at: R.min - 1, e: '🔥', t: hd.length + ' habit' + (hd.length > 1 ? 's' : '') + ' done today: ' + hd.map(h => h.emoji).join(' ') });
       return out.sort((a, b) => b.at - a.at).slice(0, 5);
     });
-    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc, updBanner, upcoming, recent, whenLabel };
+    return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc, updBanner, upcoming, recent, whenLabel,
+      top, rest, star, sections, custom, wrapOpen, showWrap, toTomorrow, allTomorrow, wrapDone, reviewNudge };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <header class="top">
@@ -2507,6 +2894,7 @@ const TodayView = {
         <div class="sub" style="margin:0 0 6px">{{ gFull(R.today) }} · <b>{{ jFull(R.today) }}</b></div>
         <h1>{{ greet }}<template v-if="S.settings.name">,<br>{{ S.settings.name }}</template> {{ greetE }}</h1>
       </div>
+      <button class="icon-btn" @click="ui.capture = {}" aria-label="Quick capture"><Ic n="plus" :w="2.4"/></button>
       <button class="icon-btn" @click="go('settings')" aria-label="Settings"><Ic n="settings"/></button>
     </header>
 
@@ -2525,7 +2913,25 @@ const TodayView = {
       <button class="icon-btn plain" @click="dismissUpdate" aria-label="Later"><Ic n="x" :s="17"/></button>
     </div>
 
-    <div v-if="socTodo.total" class="card people-card tap" style="margin-top:14px" @click="socTodo.questions.length === 1 && !socTodo.unread && !socTodo.reqs ? go('pair:' + socTodo.questions[0].id) : go('people')">
+    <template v-for="sec in sections" :key="sec">
+    <div v-if="sec === 'wrap' && showWrap" class="card wrap-card">
+      <div class="sec" style="margin-bottom:6px"><h3><Ic n="moon-star" :s="16" style="color:var(--c-count)"/>Wrap up your day</h3><button class="link" @click="go('timeline')">Timeline <Ic n="chevron-right" :s="16"/></button></div>
+      <template v-if="wrapOpen.length">
+        <div class="muted" style="font-size:14px;margin-bottom:4px">{{ wrapOpen.length }} still open. Move what can wait to tomorrow.</div>
+        <div v-for="t in wrapOpen.slice(0, 4)" :key="'w' + t.id" class="mini-task">
+          <Check :on="!!justDone[t.id]" c="var(--c-tasks)" @toggle="toggleTask(t)"/><span class="t" translate="no">{{ t.title }}</span>
+          <button class="btn sm" @click="toTomorrow(t)">Tomorrow</button></div>
+        <button v-if="wrapOpen.length > 1" class="btn sm" style="margin-top:8px" @click="allTomorrow">Move all to tomorrow</button>
+      </template>
+      <template v-if="!S.mood[R.today]"><div class="muted" style="font-size:14px;margin:10px 0 4px">How did today feel?</div>
+        <div class="moods-mini"><button v-for="m in MOODS" :key="m.v" @click="setMood(m.v)" :aria-label="m.l">{{ m.e }}</button></div></template>
+      <button class="btn primary block" style="margin-top:12px" @click="wrapDone">Done for today</button>
+    </div>
+    <div v-if="sec === 'wrap' && reviewNudge && !showWrap" class="card tap review-nudge" @click="go('review')">
+      <span class="bubble" style="--c:var(--c-habits)"><Ic n="chart-column" :s="18"/></span>
+      <div class="grow"><b>Your week in review</b><div class="muted" style="font-size:13px">Tasks, habits, focus and a few patterns from the last 7 days</div></div><Ic n="chevron-right" :s="18" class="muted"/>
+    </div>
+    <div v-if="sec === 'people' && (socTodo.total)" class="card people-card tap" style="margin-top:14px" @click="socTodo.questions.length === 1 && !socTodo.unread && !socTodo.reqs ? go('pair:' + socTodo.questions[0].id) : go('people')">
       <div class="sec" style="margin-bottom:8px"><h3><Ic n="users" :s="16" style="color:var(--c-people)"/>People</h3><span class="link">Open <Ic n="chevron-right" :s="16"/></span></div>
       <div v-for="x in socTodo.questions.slice(0, 2)" :key="x.id" class="pq"><b>💬 {{ whoName(x.with) }}</b><span translate="no">{{ qText(x.today, x.with) }}</span></div>
       <div v-if="socTodo.unread" class="muted" style="font-size:14px;margin-top:4px">{{ socTodo.unread }} new message{{ socTodo.unread > 1 ? 's' : '' }}</div>
@@ -2533,7 +2939,7 @@ const TodayView = {
       <div v-if="socTodo.proposals" class="muted" style="font-size:14px;margin-top:4px">A request is waiting for you. Tap to answer</div>
     </div>
 
-    <div v-if="upcoming.length" class="card" style="margin-top:14px">
+    <div v-if="sec === 'upcoming' && (upcoming.length)" class="card" style="margin-top:14px">
       <div class="sec" style="margin-bottom:4px"><h3><Ic n="clock" :s="16"/>Coming up</h3></div>
       <button v-for="u in upcoming" :key="u.t + u.at" class="agenda-row" @click="u.go()">
         <span class="bubble" :style="{'--c': u.c}"><Ic :n="u.i" :s="16"/></span>
@@ -2542,15 +2948,24 @@ const TodayView = {
       </button>
     </div>
 
-    <div class="card" style="margin-top:14px">
+    <div v-if="sec === 'tasks'" class="card" style="margin-top:14px">
       <div class="sec"><h3>Today's tasks <span class="badge" v-if="openCount">{{ openCount }}</span></h3>
         <button class="link" @click="nav.tab = 'tasks'">All tasks <Ic n="chevron-right" :s="16"/></button></div>
+      <div v-if="top.length" class="top3">
+        <div class="top3-h"><Ic n="star" :s="14"/>Top {{ top.length }} for today</div>
+        <div v-for="t in top" :key="'top' + t.id" class="mini-task" :class="{done: t.done || justDone[t.id]}" @click="ui.task = {ref: t}">
+          <Check :on="t.done || !!justDone[t.id]" c="var(--c-mood)" @toggle="toggleTask(t)"/>
+          <span class="t" translate="no">{{ t.title }}</span>
+          <button class="star on" @click.stop="star(t)" aria-label="Remove from top 3"><Ic n="star" :s="16"/></button>
+        </div>
+      </div>
       <TransitionGroup name="list" tag="div" class="rel">
-        <div v-for="t in list" :key="t.id" class="mini-task" :class="{done: t.done || justDone[t.id]}" @click="ui.task = {ref: t}">
+        <div v-for="t in rest" :key="t.id" class="mini-task" :class="{done: t.done || justDone[t.id]}" @click="ui.task = {ref: t}">
           <Check :on="t.done || !!justDone[t.id]" :c="prioC(t.priority) === 'var(--muted)' ? 'var(--c-tasks)' : prioC(t.priority)" @toggle="toggleTask(t)"/>
           <span class="t" translate="no">{{ t.title }}</span>
           <span v-if="!t.done && t.due < R.today" class="badge" style="color:var(--c-danger);background:color-mix(in srgb,var(--c-danger) 14%,transparent)">Late</span>
           <span v-else-if="t.time && !t.done" class="muted" style="font-size:12.5px;font-weight:650">{{ t.time }}</span>
+          <button v-if="!t.done" class="star" @click.stop="star(t)" aria-label="Add to top 3"><Ic n="star" :s="16"/></button>
         </div>
       </TransitionGroup>
       <div v-if="!list.length" class="muted" style="padding:4px 0 12px;font-size:14px">Nothing due today. Add something below ✨</div>
@@ -2558,7 +2973,7 @@ const TodayView = {
         <input v-model="q" placeholder="Add a task for today" @keydown.enter="addQuick" enterkeyhint="done"></div>
     </div>
 
-    <div class="card">
+    <div v-if="sec === 'habits'" class="card">
       <div class="sec"><h3>Habits</h3><button class="link" @click="nav.tab = 'habits'">{{ hDone }}/{{ hTotal }} done <Ic n="chevron-right" :s="16"/></button></div>
       <div class="hchips" v-if="dueToday.length">
         <button v-for="h in dueToday" :key="h.id" class="hchip" :class="{on: h.log[R.today]}" :style="{'--c': h.color}" @click="toggleHabit(h, R.today)">
@@ -2569,7 +2984,7 @@ const TodayView = {
       <button v-else class="btn block" @click="nav.tab = 'habits'"><Ic n="plus" :s="18"/>Add your first habit</button>
     </div>
 
-    <div class="grid2">
+    <div v-if="sec === 'tiles'" class="grid2">
       <div class="card tile tap" style="--c:var(--c-water)" @click="go('water')">
         <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="droplet" :s="16"/></span>Water</div>
         <div class="big">{{ waterToday }}<small>/ {{ S.settings.waterGoal }}</small></div>
@@ -2593,13 +3008,13 @@ const TodayView = {
       <div class="card tile tap" style="--c:var(--c-money)" @click="nav.tab = 'money'">
         <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="wallet" :s="16"/></span>Money</div>
         <div class="big">{{ short(spentThisMonth) }}<small>T</small></div>
-        <div class="cap">Spent in {{ JM[curJ.m - 1] }}</div>
+        <div class="cap"><span>Spent in</span> <span>{{ JM[curJ.m - 1] }}</span></div>
         <div class="bar" v-if="S.settings.budget" style="margin-right:48px"><i :style="{width: Math.min(100, spentThisMonth / S.settings.budget * 100) + '%', background: spentThisMonth > S.settings.budget ? 'var(--c-danger)' : ''}"></i></div>
         <button class="add" @click.stop="ui.tx = {}" aria-label="Add expense"><Ic n="plus" :s="20" :w="2.6"/></button>
       </div>
     </div>
 
-    <div class="grid2" v-if="showCyc || nextCd">
+    <div v-if="sec === 'extras' && (showCyc || nextCd)" class="grid2">
       <div v-if="showCyc" class="card tile tap cycle-card" style="--c:var(--c-cycle)" :style="{gridColumn: both ? '' : '1 / -1'}" @click="go('cycle')">
         <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="flower-2" :s="16"/></span>{{ S.settings.cycle.name || 'Cycle' }}</div>
         <div class="big">Day {{ cyc.day }}</div>
@@ -2613,17 +3028,23 @@ const TodayView = {
       </div>
     </div>
 
-    <div v-if="recent.length" class="card">
+    <div v-if="sec === 'recent' && (recent.length)" class="card">
       <div class="sec" style="margin-bottom:6px"><h3><Ic n="activity" :s="16"/>Recently</h3></div>
-      <div v-for="x in recent" :key="x.t + x.at" class="recent-row" :class="{tap: x.go}" @click="x.go && x.go()"><span class="e">{{ x.e }}</span><span class="grow">{{ x.t }}</span><span class="muted">{{ ago(x.at) }}</span></div>
+      <div v-for="x in recent" :key="x.t + x.at" class="recent-row" :class="{tap: x.go}" @click="x.go && x.go()"><span class="e">{{ x.e }}</span><span class="grow"><span :translate="x.mine ? 'no' : null">{{ x.t }}</span><template v-if="x.l"> · <span>{{ x.l }}</span></template><template v-if="x.n"> · <span translate="no">{{ x.n }}</span></template></span><span class="muted">{{ ago(x.at) }}</span></div>
     </div>
 
-    <div v-if="pinned.length" class="card">
+    <div v-if="sec === 'pinned' && (pinned.length)" class="card">
       <div class="sec"><h3><Ic n="pin" :s="16" style="color:var(--c-notes)"/>Pinned notes</h3><button class="link" @click="go('notes')">Notes <Ic n="chevron-right" :s="16"/></button></div>
       <div v-for="n in pinned" :key="n.id" class="list-row tap" @click="go('notes')">
         <div class="grow"><div class="t" translate="no">{{ n.title || 'Untitled' }}</div><div class="s" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" translate="no">{{ n.body }}</div></div>
       </div>
     </div>
+    </template>
+    <button class="link-btn today-custom" @click="custom = true"><Ic n="layout-grid" :s="15"/>Customize Today</button>
+    <Sheet :open="custom" title="Customize Today" @close="custom = false">
+      <p class="muted" style="font-size:14px;margin-bottom:10px">Choose what Today shows, and in which order.</p>
+      <TodaySections/>
+    </Sheet>
   </div>`,
 };
 
@@ -2974,6 +3395,8 @@ const MoreView = {
         { id: 'mood', n: 'smile', l: 'Mood', c: 'var(--c-mood)', s: m ? MOODS[m.v - 1].e + ' ' + MOODS[m.v - 1].l : 'Not logged today' },
         { id: 'countdowns', n: 'hourglass', l: 'Countdowns', c: 'var(--c-count)', s: nx ? (nx.days ? nx.days + ' days to ' + nx.c.title : nx.c.title + ' is today!') : 'Nothing planned' },
         { id: 'cycle', n: 'flower-2', l: 'Cycle', c: 'var(--c-cycle)', s: c.has ? 'Day ' + c.day + ' · ' + c.phase : 'Set up tracking' },
+        { id: 'timeline', n: 'clock', l: 'Timeline', c: 'var(--c-tasks)', s: (() => { const n = dayTimeline(R.today).total; return n ? n + ' thing' + (n === 1 ? '' : 's') + ' today' : 'Your day, in order'; })() },
+        { id: 'review', n: 'chart-column', l: 'Weekly review', c: 'var(--c-habits)', s: S.reviews[addDays(R.today, -6)] ? 'Reviewed this week' : 'The last 7 days' },
         { id: 'people', n: 'users', l: 'People', c: 'var(--c-people)', dot: socTodo.value.total, s: (() => {
           const t = socTodo.value;
           if (!Soc.acct) return 'Daily questions & chat';
@@ -3758,8 +4181,28 @@ const PeopleView = {
       .sort((a, b) => (b.line.hot + (b.p.unread > 0)) - (a.line.hot + (a.p.unread > 0)) || ((b.p.last || {}).at || 0) - ((a.p.last || {}).at || 0)));
     function open(p) { Soc.open = p.id; nav.screen = 'pair'; }
 
-    const menu = ref(false), del = ref(false), prof = reactive({ name: '', emoji: '' });
-    watch(menu, o => { if (o && Soc.me) { prof.name = Soc.me.name; prof.emoji = Soc.me.emoji; } });
+    const menu = ref(false), del = ref(false), prof = reactive({ name: '', emoji: '' }), blocks = ref([]);
+    watch(menu, o => {
+      if (o && Soc.me) { prof.name = Soc.me.name; prof.emoji = Soc.me.emoji; }
+      if (o) api('/blocks').then(r => { blocks.value = r.blocks || []; }).catch(() => {});
+    });
+    async function unblock(h) {
+      try { await api('/unblock', { handle: h }); blocks.value = blocks.value.filter(x => x !== h); say('@' + h + ' · ' + tr('Unblocked')); } catch (e) { say(netErr(e)); }
+    }
+    // a new login key: every other phone signed in with the old one is signed out, this one stays in
+    const rotateAsk = ref(false);
+    async function rotateKey() {
+      try {
+        const r = await api('/rotate', {});
+        Soc.acct = { ...Soc.acct, token: r.token }; saveSoc(); socNative();
+        try { sock && sock.close(); } catch (e) {}
+        socConnect();
+        rotateAsk.value = false; say('Other phones were signed out. Your new login key is ready to copy');
+      } catch (e) { say(netErr(e)); }
+    }
+    async function blockReq(h) {
+      try { await api('/block', { handle: h }); await refreshMe(); say('@' + h + ' · ' + tr('Blocked. They won\'t be told')); } catch (e) { say(netErr(e)); }
+    }
     async function saveProfile() {
       try { await api('/me', { name: prof.name.trim(), emoji: prof.emoji }); await refreshMe(); menu.value = false; say('Profile updated'); } catch (e) { say(netErr(e)); }
     }
@@ -3768,7 +4211,8 @@ const PeopleView = {
     }
     const notifOff = computed(() => !Native.has && !(PUSH_SUPPORTED && Rem.perm === 'granted' && Soc.me && Soc.me.push));
     onMounted(() => { if (Soc.acct) refreshMe(); });
-    return { f, handleOk, signup, signin, q, found, searching, missing, find, busyH, act, inReqs, outReqs, list, open, menu, del, prof, saveProfile, deleteAccount, notifOff, AVATARS, shareText, socSignOut };
+    return { f, handleOk, signup, signin, q, found, searching, missing, find, busyH, act, inReqs, outReqs, list, open, menu, del, prof, saveProfile, deleteAccount, notifOff, AVATARS, shareText, socSignOut,
+      blocks, unblock, rotateAsk, rotateKey, blockReq };
   },
   template: `<div class="view" style="--acc:var(--c-people)">
     <Head title="People" sub="Daily questions & chat"><button v-if="Soc.acct" class="icon-btn" @click="menu = true" aria-label="People settings"><Ic n="settings" :s="19"/></button></Head>
@@ -3880,11 +4324,24 @@ const PeopleView = {
           <button class="list-row" style="width:100%;text-align:left" @click="menu = false; socSignOut('Signed out. Use your login key to sign back in')">
             <span class="bubble" style="--c:var(--muted)"><Ic n="log-out" :s="18"/></span>
             <div class="grow"><div class="t">Sign out on this phone</div><div class="s">Copy your login key first, or you can't get back in</div></div></button>
+          <button class="list-row" style="width:100%;text-align:left" @click="rotateAsk = true">
+            <span class="bubble" style="--c:var(--c-mood)"><Ic n="lock" :s="18"/></span>
+            <div class="grow"><div class="t">Sign out other phones</div><div class="s">Makes a new login key. Phones using the old one are signed out</div></div></button>
           <button class="list-row" style="width:100%;text-align:left" @click="del = true">
             <span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
             <div class="grow"><div class="t" style="color:var(--c-danger)">Delete my ID</div><div class="s">Removes all your connections and conversations</div></div></button>
         </div>
+        <div class="label">Blocked</div>
+        <div class="settings-group" style="box-shadow:none">
+          <div v-for="h in blocks" :key="h" class="list-row"><div class="grow"><div class="t" translate="no">@{{ h }}</div><div class="s">Can't find you or send you requests</div></div>
+            <button class="btn sm" @click="unblock(h)">Unblock</button></div>
+          <div v-if="!blocks.length" class="list-row"><div class="grow s muted">No one is blocked</div></div>
+        </div>
       </div>
+    </Sheet>
+    <Sheet :open="rotateAsk" title="Sign out other phones?" @close="rotateAsk = false">
+      <p class="muted">Orbit makes a new login key for you. Any other phone using your old key is signed out, and needs the new key to sign back in. This phone stays signed in.</p>
+      <div class="btn-row"><button class="btn" @click="rotateAsk = false">Cancel</button><button class="btn primary" @click="rotateKey">Sign them out</button></div>
     </Sheet>
     <Sheet :open="del" title="Delete your ID?" @close="del = false">
       <p class="muted">Your connections, chats and answers will be deleted for everyone. This can't be undone.</p>
@@ -4084,7 +4541,7 @@ const PairView = {
       const t = p.value.proposal.type;
       try { await api('/p/' + id + '/type', { type: t }); await loadPair(id); say('You\'re now ' + REL[t].l + ' ' + REL[t].e); Native.vibrate(20); } catch (e) { say(netErr(e)); }
     }
-    const relOpen = ref(false), leaveAsk = ref(false);
+    const relOpen = ref(false), leaveAsk = ref(false), blockAsk = ref(false);
     // the time is shared: changing it asks the other person
     async function setTime(t) {
       if (p.value && t === p.value.time && !p.value.timeProposal) return;
@@ -4093,11 +4550,16 @@ const PairView = {
     async function answerTime(yes) {
       try { await api('/p/' + id + '/' + (yes ? 'timeok' : 'timeno'), {}); await loadPair(id); if (yes) say('Daily question at ' + p.value.time + ' for both of you'); } catch (e) { say(netErr(e)); }
     }
+    async function block() {
+      const h = p.value && p.value.with && p.value.with.handle;
+      if (!h) return;
+      try { await api('/block', { handle: h }); blockAsk.value = false; relOpen.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('@' + h + ' · ' + tr('Blocked')); } catch (e) { say(netErr(e)); }
+    }
     async function leave() {
       try { await api('/p/' + id + '/leave', {}); leaveAsk.value = false; delete Soc.chats[id]; await refreshMe(); nav.screen = 'people'; say('Connection removed'); } catch (e) { say(netErr(e)); }
     }
     const tzNote = computed(() => (p.value && p.value.tz !== TZ ? ' (' + p.value.tz + ')' : ''));
-    return { answerTime, attachMenu, attachPhoto, attachFile, save, viewerMsg, canFile, fileSize, fileIcon, atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id };
+    return { answerTime, attachMenu, attachPhoto, attachFile, save, viewerMsg, canFile, fileSize, fileIcon, atBottom, newCount, chatEl, latest, editing, delAsk, startEdit, cancelEdit, askDelete, confirmDelete, pending, viewer, comp, attach, pressStart, pressEnd, srcOf, openPhoto, bgTap, onFocus, canPhoto, Photos, sel, replyTo, flash, tapMsg, reply, react, copyMsg, jump, rxList, REACTS, st, p, meH, nm, tab, draft, box, send, grow, rows, older, noMore, loadOlder, drafts, sending, answer, today, past, decline, accept, relOpen, leaveAsk, setTime, leave, tzNote, retryMsg, id, blockAsk, block };
   },
   template: `<div class="view pair-view" :class="{chatting: tab === 'chat'}" style="--acc:var(--c-people)" @click="bgTap">
     <div class="pair-bar">
@@ -4243,6 +4705,7 @@ const PairView = {
             <TimeChip :model-value="p.time" @update:model-value="setTime" title="Daily question time"/></div>
         </div>
         <button class="btn danger block" style="margin-top:18px" @click="leaveAsk = true">Remove {{ nm }}</button>
+        <button class="link-btn" style="margin-top:10px;color:var(--c-danger)" @click="blockAsk = true"><span>Block</span> <span translate="no">{{ nm }}</span></button>
       </div>
     </Sheet>
     <Sheet :open="attachMenu" title="Send" @close="attachMenu = false">
@@ -4254,6 +4717,10 @@ const PairView = {
     <Sheet :open="!!delAsk" title="Delete message?" @close="delAsk = null">
       <p class="muted">It will be removed for both of you{{ delAsk && delAsk.media ? ', photo included' : '' }}.</p>
       <div class="btn-row"><button class="btn" @click="delAsk = null">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="confirmDelete">Delete</button></div>
+    </Sheet>
+    <Sheet :open="blockAsk" title="Block this person?" @close="blockAsk = false">
+      <p class="muted">Your connection and chat end for both of you. They can't find you or send you requests, and they aren't told. You can unblock them in People settings.</p>
+      <div class="btn-row"><button class="btn" @click="blockAsk = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="block">Block</button></div>
     </Sheet>
     <Sheet :open="leaveAsk" title="Remove connection?" @close="leaveAsk = false">
       <p class="muted">Your chat and all your answers with {{ nm }} will be deleted for both of you.</p>
@@ -4268,8 +4735,28 @@ const NotificationsView = {
     const pollLine = computed(() => {
       R.now; if (!AN || !AN.socialStatus) return '';
       let st = {}; try { st = JSON.parse(AN.socialStatus()); } catch (e) {}
-      if (!st.last) return 'About every 1–2 minutes while the phone is awake. Not checked yet';
-      return 'About every 1–2 minutes while the phone is awake · last check ' + ago(st.last) + (st.result && st.result !== 'ok' && st.result !== 'checking' ? ' (' + st.result + ')' : '');
+      const pace = 'About every 2 minutes after you use People, then every 5–15 minutes. Android may delay checks to save battery';
+      if (!st.last) return pace + ' · not checked yet';
+      return pace + ' · last check ' + ago(st.last) + (st.result && st.result !== 'ok' && st.result !== 'checking' ? ' (' + st.result + ')' : '');
+    });
+    // what could stop reminders from arriving on time (Android only)
+    const diag = ref(null);
+    const CH = { tasks: 'Task reminders', water: 'Water reminders', reminders: 'Personal reminders', focus: 'Focus timer', cycle: 'Cycle', social: 'People' };
+    function readDiag() { try { if (AN && AN.notifDiag) diag.value = JSON.parse(AN.notifDiag()); } catch (e) {} }
+    readDiag();
+    const resume = () => { if (!document.hidden) readDiag(); };
+    document.addEventListener('visibilitychange', resume);
+    onBeforeUnmount(() => document.removeEventListener('visibilitychange', resume));
+    const problems = computed(() => {
+      const d = diag.value; if (!d) return [];
+      const out = [];
+      if (d.channelsOff && d.channelsOff.length) {
+        const names = d.channelsOff.map(c => tr(CH[c] || c)).join(FA ? '، ' : ', ');
+        out.push({ id: 'ch', t: 'Some kinds are turned off', s: FA ? names + ' نمایش داده نمی‌شن' : names + ' won\'t show', fix: 'Open settings', go: () => AN.openNotifSettings() });
+      }
+      if (d.exact === false) out.push({ id: 'exact', t: 'Reminders may be a few minutes late', s: 'Android hasn\'t allowed Orbit to use exact alarms', fix: 'Open settings', go: () => AN.openAppSettings() });
+      if (d.batteryFree === false) out.push({ id: 'bat', t: 'Battery saving can delay reminders', s: 'Set Orbit to "Unrestricted" or "Don\'t optimise" so alarms and message checks aren\'t held back', fix: 'Battery settings', go: () => (AN.openBatterySettings ? AN.openBatterySettings() : AN.openAppSettings()) });
+      return out;
     });
     const ICONS = { tasks: ['circle-check', 'var(--c-tasks)'], water: ['droplet', 'var(--c-water)'], focus: ['timer', 'var(--c-focus)'], cycle: ['flower-2', 'var(--c-cycle)'], reminders: ['bell', 'var(--c-mood)'], social: ['heart', 'var(--c-people)'] };
     // any kind of notification without its own icon gets the bell (an unknown kind used to break this screen)
@@ -4287,7 +4774,7 @@ const NotificationsView = {
       if (!Rem.push.token) return 'off';
       return Rem.state === 'error' ? 'error' : 'on';
     });
-    return { pollLine, upcoming, whenLabel, status, ICON, everyLabel, hm };
+    return { pollLine, upcoming, whenLabel, status, ICON, everyLabel, hm, diag, problems };
   },
   template: `<div class="view" style="--acc:var(--c-tasks)">
     <Head title="Notifications" :sub="Native.has ? 'Delivered by this phone, even offline' : 'Delivered by Orbit\\'s push server'"/>
@@ -4328,6 +4815,20 @@ const NotificationsView = {
           <div class="grow"><b>Not available here</b><div class="s">This browser can't receive notifications. Use Safari on iPhone (installed to Home Screen) or the Android app.</div></div></div>
       </template>
     </div>
+
+    <template v-if="diag && status === 'on'">
+      <div class="label">Reliability check</div>
+      <div class="settings-group">
+        <div v-for="x in problems" :key="x.id" class="list-row diag-row">
+          <span class="bubble" style="--c:var(--c-mood)"><Ic n="circle-alert" :s="18"/></span>
+          <div class="grow"><div class="t">{{ x.t }}</div><div class="s">{{ x.s }}</div></div>
+          <button class="btn sm" @click="x.go()">{{ x.fix }}</button>
+        </div>
+        <div v-if="!problems.length" class="list-row"><span class="bubble" style="--c:var(--c-habits)"><Ic n="check" :s="18"/></span>
+          <div class="grow"><div class="t">Nothing is holding reminders back</div><div class="s">Exact alarms are allowed and every kind is turned on</div></div></div>
+      </div>
+      <p class="fine" style="margin:8px 4px 0">Phones from some makers still pause apps in the background. If a reminder arrives late, check the battery settings for Orbit.</p>
+    </template>
 
     <div class="label">Personal reminders</div>
     <div class="settings-group">
@@ -4999,6 +5500,7 @@ const App = {
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
       notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, reminders: RemindersView, people: PeopleView, pair: PairView,
+      timeline: TimelineView, review: ReviewView,
     };
     const current = computed(() => nav.screen || nav.tab);
     function tab(id) {
@@ -5026,7 +5528,7 @@ const App = {
         <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :style="{'--acc': t.c}" @click="tab(t.id)">
           <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/><i v-if="t.id === 'more' && socTodo.total" class="tab-dot"></i></span>{{ t.l }}</button>
       </nav>
-      <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/><RemSheet/><PickerSheet/>
+      <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/><RemSheet/><PickerSheet/><CaptureSheet/>
     </template>
     <Transition name="toast"><div v-if="toast.msg" class="toast" :key="toast.id"><span>{{ toast.msg }}</span><button v-if="toast.undo" @click="doUndo"><Ic n="undo-2" :s="15" style="display:inline;vertical-align:-2px"/> Undo</button></div></Transition>
   </div>`,
@@ -5045,7 +5547,8 @@ for (const [k, c] of Object.entries(live)) Object.defineProperty(app.config.glob
 app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).component('Sheet', Sheet).component('Swipe', Swipe)
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
   .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding).component('RelPick', RelPick)
-  .component('EmojiPick', EmojiPick).component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip);
+  .component('EmojiPick', EmojiPick).component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip)
+  .component('CaptureSheet', CaptureSheet).component('TodaySections', TodaySections);
 app.mount('#app');
 // tell Android this version of the screens started fine (a version that never gets here is rolled back)
 try { if (AN && AN.bootOk) setTimeout(() => AN.bootOk(), 1500); } catch (e) {}
