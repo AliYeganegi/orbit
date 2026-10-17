@@ -438,7 +438,8 @@ migrate('water-reminder', () => {
 }
 runMigrations();
 
-const R = reactive({ now: Date.now(), today: keyOf(new Date()), sysDark: Native.sysDark() });
+// now: every second (timers); min: once a minute, for lists that only need minute precision
+const R = reactive({ now: Date.now(), min: Math.floor(Date.now() / 60e3) * 60e3, today: keyOf(new Date()), sysDark: Native.sysDark() });
 const nav = reactive({ tab: 'today', screen: null });
 const ui = reactive({ task: null, tx: null, accounts: null, budget: false, rem: null });
 const toast = reactive({ msg: '', undo: null, id: 0 });
@@ -511,7 +512,7 @@ function delTask(t) {
 }
 const prioC = p => PRIOS[p || 0].c;
 /** The task's time (not the reminder) has gone by today or earlier. */
-function taskPassed(t) { if (!t.due || !t.time) return false; R.now; const d = parseKey(t.due); const [h, m] = t.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime() < Date.now(); }
+function taskPassed(t) { if (!t.due || !t.time) return false; R.min; const d = parseKey(t.due); const [h, m] = t.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime() < Date.now(); }
 
 /* a habit may be for every day (no `days`) or for chosen weekdays, e.g. exercise on Sat, Mon and Wed */
 const habitDue = (h, k) => !h.days || !h.days.length || h.days.includes(parseKey(k).getDay());
@@ -631,26 +632,30 @@ const Timer = {
     Native.vibrate(8);
   },
   skip() { this.withUndo(S.timer.mode === 'work' ? 'Session ended early' : 'Break skipped', () => this.finish(false)); },
-  log(min) {
-    const l = S.focusLog[R.today] || (S.focusLog[R.today] = { min: 0, n: 0, s: [] });
+  log(min, day = R.today) {
+    const l = S.focusLog[day] || (S.focusLog[day] = { min: 0, n: 0, s: [] });
     if (!l.s) l.s = [];
     l.min += min;
     return l;
   },
   finish(auto) {
     const t = S.timer, f = S.settings.focus;
+    // if the app was closed when the time ran out, count the session at the moment it ended, quietly
+    const endedAt = auto && t.endAt ? Math.min(Date.now(), t.endAt) : Date.now();
+    const late = auto && Date.now() - endedAt > 60e3;
     if (t.mode === 'work') {
       const mins = auto ? Math.round(this.total() / 60) : Math.floor(this.elapsed() / 60);
       if (mins > 0) {
-        const l = this.log(mins);
+        const l = this.log(mins, keyOf(new Date(endedAt)));
         if (auto) l.n++;
-        l.s.push({ at: Date.now(), min: mins, label: t.label || '', done: !!auto });
+        l.s.push({ at: endedAt, min: mins, label: t.label || '', done: !!auto });
       }
       if (auto) t.count++;
       t.mode = auto && t.count % f.rounds === 0 ? 'long' : 'short';
     } else t.mode = 'work';
     t.running = false; t.total = this.len(); t.left = t.total;
     wake.off();
+    if (late) { say((t.mode === 'work' ? 'Your break' : 'Your focus session') + ' ended at ' + hm(endedAt)); return; }
     if (auto) {
       Native.vibrate(600);
       if (f.sound && !document.hidden) chime();
@@ -672,6 +677,8 @@ const focusStreak = computed(() => {
 
 setInterval(() => {
   R.now = Date.now();
+  const m = Math.floor(R.now / 60e3) * 60e3;
+  if (m !== R.min) R.min = m;
   const k = keyOf(new Date());
   if (k !== R.today) R.today = k;
   if (S.timer.running && R.now >= S.timer.endAt) Timer.finish(true);
@@ -840,13 +847,19 @@ function cdTarget(c) {
   if (c.repeat === 'greg') {
     const d = parseKey(c.date); const ty = parseKey(t).getFullYear();
     for (let y = ty; y <= ty + 1; y++) {
-      const k = keyOf(new Date(y, d.getMonth(), d.getDate()));
+      let dt = new Date(y, d.getMonth(), d.getDate());
+      if (dt.getMonth() !== d.getMonth()) dt = new Date(y, d.getMonth() + 1, 0); // Feb 29 → Feb 28 in common years
+      const k = keyOf(dt);
       if (k >= t) return k;
     }
   }
   if (c.repeat === 'jal') {
     const j = jal(c.date);
-    for (let i = 0; i < 370; i++) { const k = addDays(t, i); const jj = jal(k); if (jj.m === j.m && jj.d === j.d) return k; }
+    for (let i = 0; i < 370; i++) {
+      const k = addDays(t, i), jj = jal(k);
+      // 30 Esfand only exists in leap years: other years it's the last day of Esfand
+      if (jj.m === j.m && (jj.d === j.d || (jj.d < j.d && jal(addDays(k, 1)).m !== j.m))) return k;
+    }
   }
   return c.date;
 }
@@ -1666,7 +1679,7 @@ function remRule(r) {
 const remRules = computed(() => S.reminders.filter(r => r.on !== false).map(remRule));
 const remNext = r => OrbitSchedule.ruleTimes(remRule(r), Date.now(), TZ, 3);
 const waterRem = computed(() => S.reminders.find(r => r.water));
-const waterNext = computed(() => { R.now; return waterRem.value && waterRem.value.on !== false ? remNext(waterRem.value) : []; });
+const waterNext = computed(() => { R.min; return waterRem.value && waterRem.value.on !== false ? remNext(waterRem.value) : []; });
 
 /* small IndexedDB key-value store, shared with the service worker */
 const idb = {
@@ -2416,7 +2429,7 @@ const Onboarding = {
 const TodayView = {
   setup() {
     const q = ref('');
-    const hour = computed(() => new Date(R.now).getHours());
+    const hour = computed(() => new Date(R.min).getHours());
     const greet = computed(() => { const h = hour.value; return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Good night'; });
     const greetE = computed(() => { const h = hour.value; return h < 5 || h >= 22 ? '🌙' : h < 12 ? '☀️' : h < 17 ? '👋' : '🌆'; });
     const rel = computed(() => S.tasks.filter(t => t.due && (t.done ? t.doneDay === R.today && t.due <= R.today : t.due <= R.today)));
@@ -2450,7 +2463,7 @@ const TodayView = {
     const atOf = (k, hhmm) => { const d = parseKey(k); const [h, m] = (hhmm || '09:00').split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); };
     const whenLabel = at => (isToday(at) ? hm(at) : whenShort(at));
     const upcoming = computed(() => {
-      const now = R.now, end = now + 36 * 3600e3, out = [];
+      const now = Math.max(R.min, Date.now() - 60e3), end = now + 36 * 3600e3, out = [];
       for (const t of S.tasks) if (!t.done && t.due && t.time) { const at = atOf(t.due, t.time); if (at >= now && at <= end) out.push({ at, i: t.remind ? 'bell' : 'circle-check', c: 'var(--c-tasks)', t: t.title, s: 'Task', go: () => { ui.task = { ref: t }; } }); }
       for (const r of S.reminders) if (r.on !== false) { const at = remNext(r)[0]; if (at && at <= end) out.push({ at, i: 'bell', c: r.color || 'var(--c-mood)', t: (r.emoji ? r.emoji + ' ' : '') + r.title, s: 'Reminder', go: () => go('reminders') }); }
       for (const p of socPairs.value) {
@@ -2465,12 +2478,12 @@ const TodayView = {
       return out.sort((a, b) => a.at - b.at).slice(0, 6);
     });
     const recent = computed(() => {
-      const since = R.now - 24 * 3600e3, out = [];
+      const since = R.min - 24 * 3600e3, out = [];
       for (const t of S.tasks) if (t.done && t.doneAt > since) out.push({ at: t.doneAt, e: '✅', t: t.title });
       for (const x of S.money) if (x.created > since && !x.pending) out.push({ at: x.created, e: catOf(x.cat).e, t: (x.type === 'in' ? '+' : '−') + fmt(x.amount) + ' T' + (x.note ? ' · ' + x.note : ' · ' + catOf(x.cat).l) });
       for (const p of socPairs.value) if (p.last && p.last.by !== (Soc.acct && Soc.acct.handle) && p.last.at > since && !p.last.deleted) out.push({ at: p.last.at, e: p.with.emoji || '💬', t: whoName(p.with) + ': ' + clip(p.last.text || '📷 Photo', 50), go: () => go('pair:' + p.id) });
       const hd = S.habits.filter(h => h.log[R.today]);
-      if (hd.length) out.push({ at: R.now - 1, e: '🔥', t: hd.length + ' habit' + (hd.length > 1 ? 's' : '') + ' done today: ' + hd.map(h => h.emoji).join(' ') });
+      if (hd.length) out.push({ at: R.min - 1, e: '🔥', t: hd.length + ' habit' + (hd.length > 1 ? 's' : '') + ' done today: ' + hd.map(h => h.emoji).join(' ') });
       return out.sort((a, b) => b.at - a.at).slice(0, 5);
     });
     return { q, greet, greetE, tTotal, tDone, hTotal, hDone, pct, hero, list, openCount, addQuick, mood, nextCd, pinned, both, showCyc, updBanner, upcoming, recent, whenLabel };
@@ -4249,7 +4262,7 @@ const NotificationsView = {
     // any kind of notification without its own icon gets the bell (an unknown kind used to break this screen)
     const ICON = new Proxy(ICONS, { get: (t, k) => t[k] || ['bell', 'var(--muted)'] });
     const upcoming = computed(() => {
-      R.now;
+      R.min;
       const rem = S.reminders.filter(r => r.on !== false).flatMap(r => remNext(r).map(at => ({ id: r.id + at, at, ch: r.water ? 'water' : 'reminders', title: r.emoji + ' ' + r.title })));
       return [...plan.value, ...rem].sort((a, b) => a.at - b.at).slice(0, 6);
     });
@@ -4730,7 +4743,7 @@ const RemindersView = {
     onBeforeUnmount(() => clearInterval(tickT));
     // a reminder whose time has passed isn't "done": it just went off. Keep those apart from what's coming.
     const wentOff = r => { if (r.kind !== 'once' || !r.date || !r.time) return 0; const d = parseKey(r.date); const [h, m] = r.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); };
-    const all = computed(() => { R.now; return S.reminders.map(r => { const next = r.on === false ? [] : remNext(r); return { r, next: next[0] || null, past: r.on !== false && !next.length, at: wentOff(r) }; }); });
+    const all = computed(() => { R.min; return S.reminders.map(r => { const next = r.on === false ? [] : remNext(r); return { r, next: next[0] || null, past: r.on !== false && !next.length, at: wentOff(r) }; }); });
     const groups = computed(() => [
       { id: 'up', l: '', items: all.value.filter(x => x.r.on !== false && !x.past).sort((a, b) => a.next - b.next) },
       { id: 'paused', l: 'Paused', items: all.value.filter(x => x.r.on === false) },

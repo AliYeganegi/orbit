@@ -82,3 +82,14 @@ console.log('✓ water schedule: windows, intervals, goal skip, weekdays, DST');
   assert.equal(R.perDay(daily), 2);
   console.log('✓ reminder rules: once, daily times + weekdays, interval + end date, monthly Gregorian/Shamsi incl. short months, pause');
 }
+
+// --- DST: rules step calendar days in the zone, so a day with a clock change is never skipped ---
+{
+  const R = globalThis.OrbitSchedule, tz = 'Europe/Berlin';
+  const at = (y, m, d, h, mi) => R.zonedToUtc(y, m, d, h, mi, tz);
+  assert.equal(R.nextAt({ kind: 'interval', every: 60, start: '09:00', end: '22:00' }, at(2026, 3, 28, 23, 45), tz), at(2026, 3, 29, 9, 0), 'spring forward day kept');
+  assert.equal(R.nextAt({ kind: 'daily', times: ['09:00'] }, at(2026, 10, 24, 23, 30), tz), at(2026, 10, 25, 9, 0), 'fall back day kept');
+  assert.equal(R.ruleTimes({ kind: 'daily', times: ['09:00'] }, at(2026, 3, 27, 10, 0), tz, 3).length, 3);
+  assert.equal(R.nextAt({ kind: 'daily', times: ['09:00'], days: [0] }, at(2026, 3, 28, 10, 0), tz), at(2026, 3, 29, 9, 0), 'weekday on the DST Sunday');
+  console.log('✓ DST transitions: no skipped or doubled days');
+}

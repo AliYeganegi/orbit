@@ -60,8 +60,15 @@
       return out.slice(0, count);
     }
     const horizon = kind === 'monthly' ? 400 : 9;
+    // step through calendar days in the rule's time zone (not 24-hour blocks, which skip a day across DST changes)
+    const f0 = localParts(from, tz);
+    const day = i => {
+      const u = new Date(Date.UTC(f0.y, f0.m - 1, f0.d + i));
+      return { y: u.getUTCFullYear(), m: u.getUTCMonth() + 1, d: u.getUTCDate(), wd: u.getUTCDay() };
+    };
+    const noon = q => zonedToUtc(q.y, q.m, q.d, 12, 0, tz);
     for (let i = 0; i < horizon && out.length < count; i++) {
-      const p = localParts(from + i * 864e5, tz);
+      const p = day(i);
       if (!ok(p)) break;
       let slots = [];
       if (kind === 'interval') {
@@ -74,9 +81,9 @@
         slots = (rule.times || []).filter(isHHMM).map(toMin).sort((a, b) => a - b);
       } else if (kind === 'monthly') {
         if (!isHHMM(rule.time) || !(rule.dom >= 1)) return out;
-        const cp = rule.cal === 'jal' ? localParts(from + i * 864e5, tz, 'persian') : p;
+        const cp = rule.cal === 'jal' ? localParts(noon(p), tz, 'persian') : p;
         // a day-of-month the month doesn't have (31st in a 30-day month) falls on its last day
-        const nextDay = rule.cal === 'jal' ? localParts(from + (i + 1) * 864e5, tz, 'persian') : localParts(from + (i + 1) * 864e5, tz);
+        const nextDay = rule.cal === 'jal' ? localParts(noon(day(i + 1)), tz, 'persian') : day(i + 1);
         const isLast = nextDay.m !== cp.m;
         if (!(cp.d === rule.dom || (isLast && cp.d < rule.dom))) continue;
         slots = [toMin(rule.time)];
