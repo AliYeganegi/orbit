@@ -3,10 +3,10 @@
 Farsi for Orbit: collect the interface text that needs translating, and build web/i18n.js.
 
   python3 tools/i18n.py collect <harvest.jsonl> <out.json>   strings seen on screen (HARVEST=... with the UI tests)
-                                                             plus static text found in web/app.js; numbers become {n}
+                                                             plus static text found in the app's scripts; numbers become {n}
   python3 tools/i18n.py build <fa.json>...                    merge translations ({"English": "فارسی"}) into web/i18n.js
 
-The app looks every piece of text up in web/i18n.js at runtime (see `tr` in app.js), so only exact phrases
+The app looks every piece of text up in web/i18n.js at runtime (see `tr` in web/js/core.js), so only exact phrases
 are translated and anything people write themselves is left alone.
 """
 import json, re, sys, os
@@ -14,6 +14,13 @@ import json, re, sys, os
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 NUM = re.compile(r'\d+(?:[.,:]\d+)*')
 CODE = re.compile(r'(=>|\(\)|\.value|var\(|;|px\b|^#|https?:|\.js$|\.png$|^[\w.-]+/[\w.-]+$|[{}](?!n\})|^[a-z][\w-]*$|^[A-Z_]+$|^\W+$)')
+
+
+def app_sources():
+    """web/app.js and every script under web/js, in a stable order."""
+    import glob
+    web = os.path.join(ROOT, 'web')
+    return [os.path.join(web, 'app.js')] + sorted(glob.glob(os.path.join(web, 'js', '**', '*.js'), recursive=True))
 
 
 def norm(t):
@@ -57,7 +64,7 @@ def collect(harvest, out_path):
             line = line.strip()
             if line:
                 seen.add(json.loads(line))
-    src = open(os.path.join(ROOT, 'web', 'app.js'), encoding='utf8').read()
+    src = '\n'.join(open(f, encoding='utf8').read() for f in app_sources())
     keys = {norm(t) for t in seen | static(src)}
     keys = sorted(k for k in keys if keep(k))
     json.dump(keys, open(out_path, 'w', encoding='utf8'), ensure_ascii=False, indent=0)

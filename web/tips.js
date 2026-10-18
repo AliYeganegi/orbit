@@ -1,6 +1,6 @@
 /*
  * Daily cycle tips. "self" speaks to the person tracking her own cycle; "partner" suggests a kind
- * gesture for someone supporting her. One tip is picked per cycle day (see cycleTip in app.js).
+ * gesture for someone supporting her. One tip is picked per cycle day (see cycleTip in js/cycle.js).
  * General wellbeing suggestions only, not medical advice.
  */
 (function (g) {

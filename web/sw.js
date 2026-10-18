@@ -1,7 +1,7 @@
 // Orbit service worker: offline cache + push notifications.
 // Bump VERSION whenever any app file changes so installed phones pick up the update.
 const VERSION = 'orbit-v20';
-const FILES = ['./', 'index.html', 'app.css', 'app.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'questions.js', 'i18n.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const FILES = ['./', 'index.html', 'app.css', 'app.js', 'js/core.js', 'js/store.js', 'js/domain.js', 'js/cycle.js', 'js/people.js', 'js/reminders.js', 'js/insights.js', 'js/components.js', 'js/sheets.js', 'js/views/today.js', 'js/views/review.js', 'js/views/tasks.js', 'js/views/habits.js', 'js/views/money.js', 'js/views/tools.js', 'js/views/cycle.js', 'js/views/people.js', 'js/views/notifications.js', 'js/views/reminders.js', 'js/views/settings.js', 'vue.js', 'icons.js', 'schedule.js', 'sms.js', 'tips.js', 'questions.js', 'i18n.js', 'inter.woff2', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));

@@ -1,19 +1,24 @@
-// Compiles every Vue template in web/app.js and fails on any error. Templates are compiled at runtime from JS
-// template literals, so a stray apostrophe ('It's') breaks a whole screen without any syntax error in app.js.
+// Compiles every Vue template in the app's scripts (web/app.js, web/js/**) and fails on any error. Templates are compiled
+// at runtime from JS template literals, so a stray apostrophe ('It's') breaks a whole screen without any syntax error.
 // Usage: PW=<path to playwright> node tests/templates.cjs [url]
 const { chromium } = require(process.env.PW ? process.env.PW + '/playwright' : 'playwright');
 const fs = require('node:fs');
-const src = fs.readFileSync(require('node:path').join(__dirname, '../web/app.js'), 'utf8');
+const path = require('node:path');
+const web = path.join(__dirname, '../web');
+const files = ['app.js', ...fs.readdirSync(path.join(web, 'js'), { recursive: true }).filter(f => f.endsWith('.js')).map(f => 'js/' + f)];
 const templates = [];
+for (const file of files) {
+const src = fs.readFileSync(path.join(web, file), 'utf8');
 for (let i = src.indexOf('template: `'); i >= 0; i = src.indexOf('template: `', i + 1)) {
   let j = i + 11;
   while (j < src.length && !(src[j] === '`' && src[j - 1] !== '\\')) j++;
   const line = src.slice(0, i).split('\n').length;
-  templates.push({ line, body: eval('`' + src.slice(i + 11, j) + '`') });
+  templates.push({ file, line, body: eval('`' + src.slice(i + 11, j) + '`') });
 }
 for (let i = src.indexOf("template: '"); i >= 0; i = src.indexOf("template: '", i + 1)) {
   const line = src.slice(0, i).split('\n').length, end = src.indexOf("',\n", i);
-  templates.push({ line, body: eval(src.slice(i + 10, end + 1)) });
+  templates.push({ file, line, body: eval(src.slice(i + 10, end + 1)) });
+}
 }
 (async () => {
   const b = await chromium.launch({ executablePath: process.env.CHROME || '/usr/bin/google-chrome' });
@@ -23,9 +28,9 @@ for (let i = src.indexOf("template: '"); i >= 0; i = src.indexOf("template: '", 
   const bad = await p.evaluate(list => list.map(t => {
     const errs = [];
     try { Vue.compile(t.body, { onError: e => errs.push(e.message), onWarn: () => {} }); } catch (e) { errs.push(e.message); }
-    return errs.length ? { line: t.line, errs } : null;
+    return errs.length ? { file: t.file, line: t.line, errs } : null;
   }).filter(Boolean), templates);
   await b.close();
-  if (bad.length) { console.error('FAIL ' + bad.map(x => 'app.js:' + x.line + ' ' + x.errs.join('; ')).join('\n')); process.exit(1); }
+  if (bad.length) { console.error('FAIL ' + bad.map(x => x.file + ':' + x.line + ' ' + x.errs.join('; ')).join('\n')); process.exit(1); }
   console.log('✓ ' + templates.length + ' templates compile');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });
