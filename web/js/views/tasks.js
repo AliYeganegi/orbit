@@ -49,17 +49,34 @@ const TasksView = {
       done: ['🏁', 'Nothing completed yet', 'Finished tasks will show up here.'],
     })[f.value]);
     const quickPh = computed(() => ({ today: 'Add a task for today', upcoming: 'Add a task for tomorrow', all: 'Add a task', done: 'Add a task' })[f.value]);
-    return { f, q, counts, groups, addQuick, clearDone, empty, quickPh };
+    const remActive = computed(() => S.reminders.filter(r => r.on !== false).length);
+    const plan = computed(() => nav.plan);
+    function setPlan(p) { if (nav.plan !== p) { nav.plan = p; Native.vibrate(6); } }
+    function add() {
+      if (nav.plan === 'reminders') { ui.rem = {}; return; }
+      ui.task = { preset: { due: f.value === 'today' ? R.today : f.value === 'upcoming' ? addDays(R.today, 1) : null } };
+    }
+    return { f, q, counts, groups, addQuick, clearDone, empty, quickPh, remActive, plan, setPlan, add };
   },
-  template: `<div class="view" style="--acc:var(--c-tasks)">
-    <header class="top"><div class="grow"><h1>Tasks</h1><div class="sub"><b>{{ counts.today }}</b> due today · <b>{{ counts.all }}</b> open</div></div>
-      <button v-if="f === 'done' && counts.done" class="icon-btn" @click="clearDone" aria-label="Clear completed"><Ic n="trash-2" :s="19"/></button></header>
+  template: `<div class="view" :style="{'--acc': plan === 'reminders' ? 'var(--c-mood)' : 'var(--c-tasks)'}">
+    <header class="top"><div class="grow"><h1>{{ plan === 'reminders' ? 'Reminders' : 'Tasks' }}</h1>
+      <div class="sub" v-if="plan === 'reminders'">{{ remActive ? remActive + ' active' : 'Nudges you set yourself' }}</div>
+      <div class="sub" v-else><b>{{ counts.today }}</b> due today · <b>{{ counts.all }}</b> open</div></div>
+      <button v-if="plan === 'tasks' && f === 'done' && counts.done" class="icon-btn" @click="clearDone" aria-label="Clear completed"><Ic n="trash-2" :s="19"/></button></header>
+    <div class="seg plan-seg" role="tablist" aria-label="Show">
+      <button role="tab" :aria-selected="plan === 'tasks' ? 'true' : 'false'" :class="{on: plan === 'tasks'}" @click="setPlan('tasks')">
+        <Ic n="list-checks" :s="16"/>Tasks<span class="badge" v-if="counts.today">{{ counts.today }}</span></button>
+      <button role="tab" :aria-selected="plan === 'reminders' ? 'true' : 'false'" :class="{on: plan === 'reminders'}" @click="setPlan('reminders')">
+        <Ic n="bell" :s="16"/>Reminders<span class="badge" v-if="remActive">{{ remActive }}</span></button>
+    </div>
+    <RemindersPanel v-if="plan === 'reminders'"/>
+    <template v-else>
     <div class="quickbar">
       <input v-model="q" :placeholder="quickPh" @keydown.enter="addQuick" enterkeyhint="done">
       <button class="go" :disabled="!q.trim()" @click="addQuick" aria-label="Add"><Ic n="plus" :s="20" :w="2.6"/></button>
     </div>
-    <div class="seg" style="margin-top:12px">
-      <button v-for="k in ['today','upcoming','all','done']" :key="k" :class="{on: f === k}" @click="f = k">
+    <div class="chips scroll filter-chips" role="radiogroup" aria-label="Filter">
+      <button v-for="k in ['today','upcoming','all','done']" :key="k" class="chip" role="radio" :aria-checked="f === k ? 'true' : 'false'" :class="{on: f === k}" @click="f = k">
         {{ k[0].toUpperCase() + k.slice(1) }}<span class="badge" v-if="counts[k] && k !== 'done'">{{ counts[k] }}</span></button>
     </div>
     <Transition name="fade" mode="out-in">
@@ -83,11 +100,12 @@ const TasksView = {
               </Swipe>
             </TransitionGroup>
           </div>
-          <p class="muted" style="text-align:center;font-size:12.5px;margin-top:22px">Swipe left to delete · tap to edit</p>
+          <p class="foot-hint">Swipe left to delete · tap to edit</p>
         </template>
         <Empty v-else :e="empty[0]" :t="empty[1]" :s="empty[2]"/>
       </div>
     </Transition>
-    <button class="fab" @click="ui.task = {preset: {due: f === 'today' ? R.today : f === 'upcoming' ? addDays(R.today, 1) : null}}" aria-label="New task"><Ic n="plus" :s="26" :w="2.4"/></button>
+    </template>
+    <button class="fab" @click="add" :aria-label="plan === 'reminders' ? 'New reminder' : 'New task'"><Ic n="plus" :s="26" :w="2.4"/></button>
   </div>`,
 };

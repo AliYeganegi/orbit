@@ -116,7 +116,7 @@ const MoneyView = {
         </TransitionGroup>
       </div>
     </template>
-    <p v-if="days.length" class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">Tap a transaction to edit it · swipe left to delete</p>
+    <p v-if="days.length" class="foot-hint">Tap a transaction to edit it · swipe left to delete</p>
     <Empty v-else-if="searching || kind !== 'all'" e="🔎" t="Nothing matches" s="Try another word, or clear the filter."/>
     <Empty v-else e="💸" t="No transactions yet" :s="'Nothing logged for ' + JM[ym.m - 1] + '. Tap + to add one.'"/>
     <button class="fab" @click="ui.tx = {}" aria-label="New transaction"><Ic n="plus" :s="26" :w="2.4"/></button>

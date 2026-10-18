@@ -196,7 +196,8 @@ runMigrations();
 
 // now: every second (timers); min: once a minute, for lists that only need minute precision
 const R = reactive({ now: Date.now(), min: Math.floor(Date.now() / 60e3) * 60e3, today: keyOf(new Date()), sysDark: Native.sysDark() });
-const nav = reactive({ tab: 'today', screen: null, arg: null });
+// tab: bottom bar; screen: a full screen over it; arg: its parameter; plan: the Tasks tab's section (tasks | reminders)
+const nav = reactive({ tab: 'today', screen: null, arg: null, plan: 'tasks' });
 const ui = reactive({ task: null, tx: null, accounts: null, budget: false, rem: null, capture: null });
 const toast = reactive({ msg: '', undo: null, id: 0 });
 let toastT;
@@ -214,11 +215,18 @@ function setLang(l) {
   if (window.orbitBeforeReload) window.orbitBeforeReload();
   location.reload();
 }
-function go(screen) {
-  if (screen && screen.startsWith('pair:')) { Soc.open = screen.slice(5); nav.screen = 'pair'; return; }
-  const i = screen ? screen.indexOf(':') : -1; // 'timeline:2025-10-01'
-  nav.arg = i > 0 ? screen.slice(i + 1) : null;
-  nav.screen = i > 0 ? screen.slice(0, i) : screen;
+const TABS = ['today', 'tasks', 'habits', 'money', 'more'];
+/** Opens a place in the app: a tab ('money'), a screen ('settings'), a chat ('pair:<id>'), a screen with a
+ *  parameter ('timeline:2025-10-01'), or Reminders (a section of the Tasks tab). Used by links, notifications and resume. */
+function go(where) {
+  nav.arg = null;
+  if (!where) { nav.screen = null; return; }
+  if (where.startsWith('pair:')) { Soc.open = where.slice(5); nav.screen = 'pair'; return; }
+  if (where === 'reminders' || where === 'tasks') { nav.plan = where; nav.tab = 'tasks'; nav.screen = null; return; }
+  if (TABS.includes(where)) { nav.tab = where; nav.screen = null; return; }
+  const i = where.indexOf(':');
+  if (i > 0) nav.arg = where.slice(i + 1);
+  nav.screen = i > 0 ? where.slice(0, i) : where;
 }
 
 /* back handling (Android hardware back) */

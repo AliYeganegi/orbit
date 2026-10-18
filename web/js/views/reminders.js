@@ -45,7 +45,11 @@ const RemSheet = {
       say('"' + r.title + '" deleted', () => S.reminders.splice(i, 0, r));
     }
     watch(() => d.title, () => { if (need.value === 'title') need.value = ''; });
-    return { d, picking, emojiOpen, need, isEdit, templates, useTpl, EVERY, KINDS, toggleDay, sameDays, addTime, preview, problem, save, remove, DAY_DOTS, DAY_PRESETS, REM_EMOJI, HABIT_COLORS, everyLabel, whenShort };
+    // skipping in the editor applies when it's saved, like every other change here
+    const dSkips = computed(() => skipsOf(d));
+    function skipFirst() { if (preview.value[0]) { d.skip = [...dSkips.value, preview.value[0]].slice(-20); Native.vibrate(6); } }
+    return { d, picking, emojiOpen, need, isEdit, templates, useTpl, EVERY, KINDS, toggleDay, sameDays, addTime, preview, problem, save, remove, DAY_DOTS, DAY_PRESETS, REM_EMOJI, HABIT_COLORS, everyLabel, whenShort,
+      dSkips, skipFirst, canSkip };
   },
   template: `<Sheet :open="!!ui.rem" :title="picking ? 'New reminder' : isEdit ? 'Edit reminder' : 'New reminder'" full @close="ui.rem = null">
     <div style="--acc:var(--c-mood)">
@@ -125,9 +129,13 @@ const RemSheet = {
           <template v-if="problem"><Ic n="circle-alert" :s="17"/><span>{{ problem }}</span></template>
           <template v-else><Ic n="bell" :s="17"/><span>Next: <b>{{ preview.map(whenShort).join(' · ') }}</b></span></template>
         </div>
+        <div v-if="!problem && d.kind !== 'once' && canSkip() && (preview.length || dSkips.length)" class="preview-actions">
+          <button v-if="preview.length" type="button" class="mini-btn" @click="skipFirst"><Ic n="skip-forward" :s="14"/><span>Skip</span> <span>{{ whenShort(preview[0]) }}</span></button>
+          <button v-if="dSkips.length" type="button" class="link-sm" @click="d.skip = []">{{ dSkips.length === 1 ? 'Undo skip' : 'Undo ' + dSkips.length + ' skips' }}</button>
+        </div>
 
         <div class="btn-row">
-          <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove" aria-label="Delete reminder"><Ic n="trash-2"/></button>
+          <button v-if="isEdit" class="btn danger icon-only" @click="remove" aria-label="Delete reminder"><Ic n="trash-2"/></button>
           <button class="btn primary" @click="save">{{ isEdit ? 'Save' : 'Add reminder' }}</button>
         </div>
       </template>
@@ -147,27 +155,28 @@ function timeLeft(at, now) {
   return parts.join(' ');
 }
 
-const RemindersView = {
+/** Your reminders, shown as the "Reminders" section of the Tasks tab. */
+const RemindersPanel = {
   setup() {
-    const tick = ref(Date.now()); // the countdowns move every second while this screen is open
-    const tickT = setInterval(() => { tick.value = Date.now(); }, 1000);
-    onBeforeUnmount(() => clearInterval(tickT));
     // a reminder whose time has passed isn't "done": it just went off. Keep those apart from what's coming.
     const wentOff = r => { if (r.kind !== 'once' || !r.date || !r.time) return 0; const d = parseKey(r.date); const [h, m] = r.time.split(':'); d.setHours(+h, +m, 0, 0); return d.getTime(); };
-    const all = computed(() => { R.min; return S.reminders.map(r => { const next = r.on === false ? [] : remNext(r); return { r, next: next[0] || null, past: r.on !== false && !next.length, at: wentOff(r) }; }); });
+    const all = computed(() => {
+      R.min;
+      return S.reminders.map(r => {
+        const next = r.on === false ? [] : remNext(r);
+        return { r, next: next[0] || null, past: r.on !== false && !next.length, at: wentOff(r), skips: skipsOf(r), repeats: repeats(r) && canSkip() };
+      });
+    });
     const groups = computed(() => [
       { id: 'up', l: '', items: all.value.filter(x => x.r.on !== false && !x.past).sort((a, b) => a.next - b.next) },
       { id: 'paused', l: 'Paused', items: all.value.filter(x => x.r.on === false) },
       { id: 'past', l: 'Past', items: all.value.filter(x => x.past).sort((a, b) => b.at - a.at) },
     ].filter(g => g.items.length));
-    function again(x) { ui.rem = { ref: x.r }; }
-    const active = computed(() => S.reminders.filter(r => r.on !== false).length);
     function toggle(r, v) { r.on = v; Native.vibrate(8); if (v && Native.has) Native.askNotify(); say(v ? 'Reminder on' : 'Paused. Turn it back on any time'); }
     function remove(r) { const i = S.reminders.indexOf(r); S.reminders.splice(i, 1); say('"' + r.title + '" deleted', () => S.reminders.splice(i, 0, r)); }
-    return { tick, timeLeft, groups, again, active, toggle, remove, whenShort };
+    return { groups, toggle, remove, whenShort, skipNext, unskip, inLabel };
   },
-  template: `<div class="view" style="--acc:var(--c-mood)">
-    <Head title="Reminders" :sub="active ? active + ' active' : 'Nudges you set yourself'"/>
+  template: `<div>
     <button v-if="!remReady && S.reminders.length" class="card hint-card tap" @click="go('alerts')">
       <Ic n="bell" :s="18"/><span class="grow">Notifications aren't on for this phone yet. Tap to set them up.</span><Ic n="chevron-right" :s="18"/></button>
     <template v-if="S.reminders.length">
@@ -176,25 +185,29 @@ const RemindersView = {
         <TransitionGroup name="list" tag="div" class="tlist rel">
           <Swipe v-for="x in g.items" :key="x.r.id" @remove="remove(x.r)" @tap="ui.rem = {ref: x.r}">
             <div class="rem" :class="{off: x.r.on === false, past: x.past}" :style="{'--c': x.r.color}">
-              <span class="e">{{ x.r.emoji }}</span>
+              <span class="e" aria-hidden="true">{{ x.r.emoji }}</span>
               <div class="grow">
                 <div class="t" translate="no">{{ x.r.title }}</div>
                 <div class="s">{{ remSummary(x.r) }}</div>
                 <div class="n" v-if="x.r.on === false">Paused</div>
                 <div class="n" v-else-if="x.past">{{ x.at ? 'Was ' + whenShort(x.at) : 'Its last time has passed' }}</div>
-                <div class="n on" v-else>Next {{ whenShort(x.next) }}</div>
-                <div v-if="x.next && x.r.on !== false && !x.past" class="left" translate="no">⏳ {{ timeLeft(x.next, tick) }}</div>
+                <div class="n on" v-else><span>Next</span> <span>{{ whenShort(x.next) }}</span><span v-if="x.next" class="left"> · <span>{{ inLabel(x.next) }}</span></span></div>
+                <div v-if="x.skips.length && x.r.on !== false" class="skip-line">
+                  <Ic n="skip-forward" :s="13"/><span>Skipping</span> <span>{{ whenShort(x.skips[0]) }}</span>
+                  <button class="link-sm" @click.stop="unskip(x.r, x.skips[0])" @pointerdown.stop>Undo</button>
+                </div>
+                <button v-if="x.repeats && x.next && x.r.on !== false" class="mini-btn" @click.stop="skipNext(x.r)" @pointerdown.stop
+                  :aria-label="'Skip the next one: ' + whenShort(x.next)"><Ic n="skip-forward" :s="14"/>Skip next</button>
               </div>
-              <button v-if="x.past" class="btn sm" @click.stop="again(x)" @pointerdown.stop>Set again</button>
-              <Toggle v-else :model-value="x.r.on !== false" @update:model-value="v => toggle(x.r, v)" @click.stop @pointerdown.stop/>
+              <button v-if="x.past" class="btn sm" @click.stop="ui.rem = {ref: x.r}" @pointerdown.stop>Set again</button>
+              <Toggle v-else :model-value="x.r.on !== false" @update:model-value="v => toggle(x.r, v)" @click.stop @pointerdown.stop :aria-label="x.r.on === false ? 'Turn on' : 'Pause'"/>
             </div>
           </Swipe>
         </TransitionGroup>
       </template>
-      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">Tap to edit · switch to pause · swipe left to delete</p>
+      <p class="foot-hint">Tap to edit · switch to pause · swipe left to delete</p>
     </template>
     <Empty v-else e="⏰" t="No reminders yet" s="Water, medicine, stretching, bills… set a nudge for anything.">
       <button class="btn primary" @click="ui.rem = {}"><Ic n="plus" :s="18"/>New reminder</button></Empty>
-    <button class="fab" @click="ui.rem = {}" aria-label="New reminder"><Ic n="plus" :s="26" :w="2.4"/></button>
   </div>`,
 };

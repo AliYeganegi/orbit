@@ -65,6 +65,8 @@ console.log('✓ water schedule: windows, intervals, goal skip, weekdays, DST');
   const daily = { kind: 'daily', times: ['21:00', '08:00'], days: [6, 0, 1, 2, 3] };
   assert.deepEqual(R.ruleTimes(daily, from, tz, 3), [at(2026, 10, 12, 21, 0), at(2026, 10, 13, 8, 0), at(2026, 10, 13, 21, 0)]);
   assert.equal(R.nextAt(daily, at(2026, 10, 14, 22, 0), tz), at(2026, 10, 17, 8, 0), 'skips Thu/Fri to Saturday');
+  // "skip next": a skipped occurrence is left out, the ones after it still come
+  assert.deepEqual(R.ruleTimes({ ...daily, skip: [at(2026, 10, 12, 21, 0)] }, from, tz, 2), [at(2026, 10, 13, 8, 0), at(2026, 10, 13, 21, 0)]);
   // interval with end date
   const iv = { kind: 'interval', every: 90, start: '09:00', end: '18:00', until: '2026-10-12' };
   assert.equal(R.nextAt(iv, from, tz), at(2026, 10, 12, 15, 0));

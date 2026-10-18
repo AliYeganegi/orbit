@@ -29,7 +29,7 @@ const TodaySections = {
     function reset() { st.order = []; st.hide = []; }
     return { rows, move, shown, toggle, reset };
   },
-  template: `<div class="settings-group" style="box-shadow:none">
+  template: `<div class="settings-group flat">
     <div v-for="(x, i) in rows" :key="x.id" class="list-row">
       <span class="bubble" style="--c:var(--c-tasks)"><Ic :n="x.n" :s="17"/></span>
       <div class="grow"><div class="t">{{ x.l }}</div></div>
@@ -301,27 +301,27 @@ const TodayView = {
 
     <div v-if="sec === 'tiles'" class="grid2">
       <div class="card tile tap" style="--c:var(--c-water)" @click="go('water')">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="droplet" :s="16"/></span>Water</div>
+        <div class="tt"><span class="bubble sm"><Ic n="droplet" :s="16"/></span>Water</div>
         <div class="big">{{ waterToday }}<small>/ {{ S.settings.waterGoal }}</small></div>
         <div class="cap">{{ fmt(waterToday * S.settings.glassMl) }} ml</div>
         <div class="bar" style="margin-right:48px"><i :style="{width: Math.min(100, waterToday / S.settings.waterGoal * 100) + '%'}"></i></div>
         <button class="add" @click.stop="addWater(1)" aria-label="Add glass"><Ic n="plus" :s="20" :w="2.6"/></button>
       </div>
       <div class="card tile tap" style="--c:var(--c-mood)" @click="go('mood')">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="smile" :s="16"/></span>Mood</div>
+        <div class="tt"><span class="bubble sm"><Ic n="smile" :s="16"/></span>Mood</div>
         <template v-if="mood"><div class="big" style="font-size:36px">{{ MOODS[mood.v - 1].e }}</div><div class="cap">Feeling {{ MOODS[mood.v - 1].l.toLowerCase() }}</div></template>
         <template v-else><div class="cap" style="margin-top:14px">How's today going?</div>
           <div class="moods-mini"><button v-for="m in MOODS" :key="m.v" @click.stop="setMood(m.v)">{{ m.e }}</button></div></template>
       </div>
       <div class="card tile tap" style="--c:var(--c-focus)" @click="go('focus')">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="timer" :s="16"/></span>Focus</div>
+        <div class="tt"><span class="bubble sm"><Ic n="timer" :s="16"/></span>Focus</div>
         <template v-if="S.timer.running || Timer.left() < Timer.total()">
           <div class="big">{{ mmss(Timer.left()) }}</div><div class="cap">{{ MODES[S.timer.mode].l }}{{ S.timer.running ? '' : ' · paused' }}</div></template>
         <template v-else><div class="big">{{ focusToday.min }}<small>min</small></div><div class="cap">{{ focusToday.n }} session{{ focusToday.n === 1 ? '' : 's' }} today</div></template>
         <button class="add" @click.stop="Timer.toggle()" :aria-label="S.timer.running ? 'Pause' : 'Start'"><Ic :n="S.timer.running ? 'pause' : 'play'" :s="18" :w="2.4"/></button>
       </div>
       <div class="card tile tap" style="--c:var(--c-money)" @click="nav.tab = 'money'">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="wallet" :s="16"/></span>Money</div>
+        <div class="tt"><span class="bubble sm"><Ic n="wallet" :s="16"/></span>Money</div>
         <div class="big">{{ short(spentThisMonth) }}<small>T</small></div>
         <div class="cap"><span>Spent in</span> <span>{{ JM[curJ.m - 1] }}</span></div>
         <div class="bar" v-if="S.settings.budget" style="margin-right:48px"><i :style="{width: Math.min(100, spentThisMonth / S.settings.budget * 100) + '%', background: spentThisMonth > S.settings.budget ? 'var(--c-danger)' : ''}"></i></div>
@@ -331,15 +331,15 @@ const TodayView = {
 
     <div v-if="sec === 'extras' && (showCyc || nextCd)" class="grid2">
       <div v-if="showCyc" class="card tile tap cycle-card" style="--c:var(--c-cycle)" :style="{gridColumn: both ? '' : '1 / -1'}" @click="go('cycle')">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="flower-2" :s="16"/></span>{{ S.settings.cycle.name || 'Cycle' }}</div>
+        <div class="tt"><span class="bubble sm"><Ic n="flower-2" :s="16"/></span>{{ S.settings.cycle.name || 'Cycle' }}</div>
         <div class="big">Day {{ cyc.day }}</div>
         <div class="cap" :style="{color: cyc.pc, fontWeight: 700}">{{ cyc.phase }}</div>
         <div class="cap">{{ cyc.toNext > 0 ? 'Period in ' + cyc.toNext + 'd' : cyc.toNext === 0 ? 'Period due today' : 'Late by ' + -cyc.toNext + 'd' }}</div>
       </div>
       <div v-if="nextCd" class="card tile tap" style="--c:var(--c-count)" :style="{gridColumn: both ? '' : '1 / -1'}" @click="go('countdowns')">
-        <div class="tt"><span class="bubble" style="width:30px;height:30px;border-radius:10px"><Ic n="hourglass" :s="16"/></span>Countdown</div>
+        <div class="tt"><span class="bubble sm"><Ic n="hourglass" :s="16"/></span>Countdown</div>
         <div class="big">{{ nextCd.days === 0 ? 'Today!' : nextCd.days }}<small v-if="nextCd.days">day{{ nextCd.days === 1 ? '' : 's' }}</small></div>
-        <div class="cap" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ nextCd.c.emoji }} {{ nextCd.c.title }}</div>
+        <div class="cap ellipsis">{{ nextCd.c.emoji }} {{ nextCd.c.title }}</div>
       </div>
     </div>
 
@@ -351,7 +351,7 @@ const TodayView = {
     <div v-if="sec === 'pinned' && (pinned.length)" class="card">
       <div class="sec"><h3><Ic n="pin" :s="16" style="color:var(--c-notes)"/>Pinned notes</h3><button class="link" @click="go('notes')">Notes <Ic n="chevron-right" :s="16"/></button></div>
       <div v-for="n in pinned" :key="n.id" class="list-row tap" @click="go('notes')">
-        <div class="grow"><div class="t" translate="no">{{ n.title || 'Untitled' }}</div><div class="s" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" translate="no">{{ n.body }}</div></div>
+        <div class="grow"><div class="t" translate="no">{{ n.title || 'Untitled' }}</div><div class="s ellipsis" translate="no">{{ n.body }}</div></div>
       </div>
     </div>
     </template>

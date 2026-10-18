@@ -12,6 +12,7 @@ offline and stays on the device.
 | Path | What |
 |---|---|
 | `web/` | The app UI (Vue 3, no bundler) plus PWA manifest, service worker and icons. Deployed to GitHub Pages on push. |
+| `web/js/` | App code by area: `core` (helpers, bridge, language), `store` (state, backup), `domain`, `cycle`, `people`, `reminders`, `insights`, `components`, `sheets`; `views/` has one file per screen. Plain scripts loaded in order by `index.html` (add new files there and to `FILES` in `sw.js`); `app.js` holds the version and the app shell. |
 | `android/` | Android shell: `src/` Java (WebView + JS bridge), `res/` icon and theme, `build.sh` Gradle-free build. |
 
 ## People: connections, chat, daily question
@@ -95,6 +96,7 @@ Serve `web/` locally (`cd web && python3 -m http.server 8766 --bind 127.0.0.1`),
 | `node tests/finance.cjs` | SMS de-duplication, balances, refunds, transfers, editor validation, search, CSV |
 | `node tests/dates.cjs` | focus sessions that ended while closed, Feb 29 / 30 Esfand countdowns |
 | `node tests/native.cjs` | Android bridge contract with a stand-in `window.Android` (EN + FA) |
+| `node tests/reminders.cjs` | Reminders in the Tasks tab, skip next (list, editor, Android payload, older APKs), links into Reminders |
 | `node tests/features.cjs` | quick capture, top 3, wrap-up, Today sections, timeline, weekly review, Persian coverage |
 | `node tests/sms.test.cjs`, `node tests/sms.regress.cjs` | bank SMS parser (no browser needed) |
 | `node tests/people.cjs`, `node tests/people-safety.cjs` | People UI against a local worker (below) |

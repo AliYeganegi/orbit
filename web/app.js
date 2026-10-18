@@ -1,5 +1,5 @@
 /* Orbit — everything in one place */
-const APP_VERSION = '1.21'; // single source of truth: android/build.sh reads this for the APK versionName
+const APP_VERSION = '1.22'; // single source of truth: android/build.sh reads this for the APK versionName
 
 /* ================= app shell ================= */
 function storeExport() {
@@ -39,10 +39,12 @@ const App = {
     ];
     const views = {
       today: TodayView, tasks: TasksView, habits: HabitsView, money: MoneyView, more: MoreView,
-      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, reminders: RemindersView, people: PeopleView, pair: PairView,
+      notes: NotesView, focus: FocusView, water: WaterView, mood: MoodView, countdowns: CountdownsView, cycle: CycleView, settings: SettingsView, alerts: NotificationsView, reports: ReportsView, people: PeopleView, pair: PairView,
       timeline: TimelineView, review: ReviewView,
     };
     const current = computed(() => nav.screen || nav.tab);
+    // never show a blank page for a place that isn't a screen (old links, older saved state): send it where it lives now
+    watch(() => nav.screen, sc => { if (sc && !views[sc]) go(sc === 'reminders' ? 'reminders' : null); }, { immediate: true });
     function tab(id) {
       Native.vibrate(6);
       if (nav.tab === id && !nav.screen) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -65,7 +67,7 @@ const App = {
     <template v-else>
       <Transition name="view" mode="out-in" @before-enter="toTop"><component :is="views[current]" :key="current === 'pair' ? 'pair:' + Soc.open : current"/></Transition>
       <nav class="tabbar">
-        <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :style="{'--acc': t.c}" @click="tab(t.id)">
+        <button v-for="t in tabs" :key="t.id" :class="{on: nav.tab === t.id}" :aria-current="nav.tab === t.id && !nav.screen ? 'page' : null" :style="{'--acc': t.c}" @click="tab(t.id)">
           <span class="pill"><Ic :n="t.n" :s="21" :w="nav.tab === t.id ? 2.3 : 2"/><i v-if="t.id === 'more' && socTodo.total" class="tab-dot"></i></span>{{ t.l }}</button>
       </nav>
       <TaskSheet/><TxSheet/><AccountsSheet/><BudgetSheet/><RemSheet/><PickerSheet/><CaptureSheet/>
@@ -88,7 +90,7 @@ app.component('Ic', Ic).component('Ring', Ring).component('Check', Check).compon
   .component('Head', Head).component('Stepper', Stepper).component('Toggle', Toggle).component('DatePick', DatePick)
   .component('Empty', Empty).component('Bars', Bars).component('CycleDaySheet', CycleDaySheet).component('Donut', Donut).component('TaskSheet', TaskSheet).component('TxSheet', TxSheet).component('AccountsSheet', AccountsSheet).component('BudgetSheet', BudgetSheet).component('RemSheet', RemSheet).component('Onboarding', Onboarding).component('RelPick', RelPick)
   .component('EmojiPick', EmojiPick).component('PickerSheet', PickerSheet).component('TimeChip', TimeChip).component('DateChip', DateChip)
-  .component('CaptureSheet', CaptureSheet).component('TodaySections', TodaySections);
+  .component('CaptureSheet', CaptureSheet).component('TodaySections', TodaySections).component('RemindersPanel', RemindersPanel);
 app.mount('#app');
 // tell Android this version of the screens started fine (a version that never gets here is rolled back)
 try { if (AN && AN.bootOk) setTimeout(() => AN.bootOk(), 1500); } catch (e) {}

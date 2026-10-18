@@ -96,24 +96,24 @@ function newReminder(tpl) {
   delete t.custom;
   const soon = new Date(Date.now() + 3600e3);
   return {
-    id: tpl && tpl.water ? 'water' : uid(), on: true, water: false, title: '', emoji: '⏰', color: '#64748b', note: '',
+    id: tpl && tpl.water ? 'water' : uid(), on: true, water: false, skip: [], title: '', emoji: '⏰', color: '#64748b', note: '',
     kind: 'once', date: keyOf(soon), time: pad(soon.getHours()) + ':00', times: ['09:00'], every: 60, start: '09:00', end: '22:00',
     days: [...ALL_DAYS], dom: 1, cal: 'jal', until: '', stopAtGoal: true, created: Date.now(), ...t, title: tpl && !tpl.custom ? t.title : '',
   };
 }
 function daysLabel(days) {
   const d = [...(days || ALL_DAYS)].sort();
-  if (d.length === 7) return 'Every day';
+  if (d.length === 7) return tr('Every day');
   const same = a => a.length === d.length && [...a].sort().every((x, i) => x === d[i]);
-  if (same([6, 0, 1, 2, 3])) return 'Sat–Wed';
-  if (same([4, 5])) return 'Thu & Fri';
+  if (same([6, 0, 1, 2, 3])) return tr('Sat–Wed');
+  if (same([4, 5])) return tr('Thu & Fri');
   return DAY_DOTS.filter(x => d.includes(x.v)).map(x => WD[x.v]).join(FA ? '، ' : ', ');
 }
 function remSummary(r) {
   const AT = FA ? ' ساعت ' : ' at ';
   if (r.kind === 'once') return r.date ? (FA ? 'یک‌بار · ' : 'Once · ') + rel(r.date) + AT + r.time : (FA ? 'یک‌بار' : 'Once');
   if (r.kind === 'daily') return daysLabel(r.days) + AT + (r.times || []).slice().sort().join(FA ? '، ' : ', ');
-  if (r.kind === 'interval') return 'Every ' + everyLabel(r.every) + ' · ' + r.start + '–' + r.end + (daysLabel(r.days) === 'Every day' ? '' : ' · ' + daysLabel(r.days));
+  if (r.kind === 'interval') return 'Every ' + everyLabel(r.every) + ' · ' + r.start + '–' + r.end + (!r.days || r.days.length === 7 ? '' : ' · ' + daysLabel(r.days));
   if (r.kind === 'monthly') return 'Monthly on day ' + r.dom + (r.cal === 'jal' ? ' (Shamsi)' : '') + ' at ' + r.time;
   return '';
 }
@@ -121,6 +121,8 @@ function remSummary(r) {
 function remRule(r) {
   const base = { id: r.id, on: r.on !== false, kind: r.kind, until: r.until || '', water: !!r.water, title: (r.emoji ? r.emoji + ' ' : '') + (r.title || tr('Reminder')), body: r.note || tr(remSummary(r)) };
   if (r.kind === 'once') Object.assign(base, { date: r.date, time: r.time });
+  const skip = skipsOf(r);
+  if (skip.length) base.skip = skip;
   if (r.kind === 'daily') Object.assign(base, { times: r.times, days: r.days });
   if (r.kind === 'interval') Object.assign(base, { every: r.every, start: r.start, end: r.end, days: r.days, stopAtGoal: !!r.stopAtGoal });
   if (r.kind === 'monthly') Object.assign(base, { dom: r.dom, cal: r.cal, time: r.time });
@@ -136,6 +138,23 @@ const WATER_TEXT = () => ({ t_none: tr('No water logged yet today'), t_some: trS
   t_goal: tr('Goal reached! 🎉'), t_logged: tr('Logged 💧'), t_today: trSlots('{c} of {g} glasses today') });
 const remRules = computed(() => S.reminders.filter(r => r.on !== false).map(remRule));
 const remNext = r => OrbitSchedule.ruleTimes(remRule(r), Date.now(), TZ, 3);
+
+/* "Skip next": one occurrence of a repeating reminder is skipped, the ones after still come.
+   Skipped times travel with the rule to every deliverer (Android alarms, iPhone push server). */
+const repeats = r => !!r.kind && r.kind !== 'once';
+const skipsOf = r => (Array.isArray(r.skip) ? r.skip.filter(t => t > Date.now() - 60e3).sort((a, b) => a - b) : []);
+function skipNext(r) {
+  const at = remNext(r)[0];
+  if (!at || !repeats(r) || !canSkip()) return null;
+  r.skip = [...skipsOf(r), at].slice(-20);
+  Native.vibrate(8);
+  say(tr('Skipped') + ' · ' + whenShort(at), () => unskip(r, at));
+  return at;
+}
+// Android alarms honour skips from APK version code 30 (1.22); older APKs would still ring, so the option stays hidden there
+const SKIP_NATIVE = 30;
+const canSkip = () => !Native.has || ((Upd.info && Upd.info.code) || 0) >= SKIP_NATIVE;
+function unskip(r, at) { r.skip = skipsOf(r).filter(t => t !== at); Native.vibrate(6); }
 const waterRem = computed(() => S.reminders.find(r => r.water));
 const waterNext = computed(() => { R.min; return waterRem.value && waterRem.value.on !== false ? remNext(waterRem.value) : []; });
 
@@ -311,11 +330,7 @@ window.orbitResume = () => {
   if (added.length === 1) say('New transaction: ' + fmt(added[0].amount) + ' T. Add a category');
   else if (added.length > 1) say(added.length + ' new bank transactions to review');
 };
-window.orbitGo = where => {
-  if (where && where.startsWith('pair:')) { Soc.open = where.slice(5); nav.screen = 'pair'; return; }
-  const tabs = ['today', 'tasks', 'habits', 'money', 'more'];
-  if (tabs.includes(where)) { nav.tab = where; nav.screen = null; } else if (where) nav.screen = where;
-};
+window.orbitGo = where => { if (where) go(where); };
 drainNative(); refreshAndroidStatus(); smsRefresh(); refreshUpdate();
 // Android switches to newly downloaded screens by reloading: save first, then come back to the same place
 // open editors register a function returning their unsaved form, so it survives the reload

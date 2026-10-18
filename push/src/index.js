@@ -65,6 +65,8 @@ function cleanRules(list) {
       Object.assign(x, { every, start: r.start, end: r.end, stopAtGoal: !!r.stopAtGoal, goalDay: isDate(r.goalDay) ? r.goalDay : null });
     }
     if (r.kind === 'monthly') { const dom = Math.round(Number(r.dom)); if (!(dom >= 1 && dom <= 31) || !isHHMM(r.time)) continue; Object.assign(x, { dom, time: r.time, cal: r.cal === 'jal' ? 'jal' : 'greg' }); }
+    // occurrences skipped in the app ("skip next"); old ones are useless, so keep a few recent ones only
+    if (Array.isArray(r.skip)) x.skip = r.skip.filter(t => Number.isFinite(t) && t > Date.now() - 864e5).slice(0, 20);
     seen.add(r.id); out.push(x);
     if (out.length >= MAX_RULES) break;
   }

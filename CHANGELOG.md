@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.22
+
+- **Reminders are one tap away:** the Tasks tab has a Tasks | Reminders switch, and every link to Reminders
+  (More, Notifications, Today, notification taps) opens it there.
+- **Skip next:** skip the next time of any repeating reminder (list or editor); the ones after it still come.
+  Undo any time. Works on iPhone (push server) and on Android from this APK (version code 30); older APKs don't
+  show the option because their alarms wouldn't honour it.
+- Reminder times read "in 1 h 30 min" instead of a ticking seconds countdown.
+- UI: task filters on one scrolling row; Habits subtitle no longer splits into columns; Money's review card spacing;
+  bigger touch targets for small buttons; visible keyboard focus; animations respect "reduce motion";
+  switches and tabs are announced correctly by screen readers; layout follows right-to-left properly in Persian.
+- Persian: reminder schedules and the new controls are fully translated.
+- Code: `web/app.js` split into `web/js` (by area) and `web/js/views` (one file per screen); one navigation function
+  (`go`) for links, notifications and resume; repeated inline styles replaced by named classes.
+
 ## 1.21
 
 Android: updates in place like before. The screens arrive by themselves on reopen, and the app offers the 1.21 APK

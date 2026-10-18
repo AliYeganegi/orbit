@@ -90,9 +90,10 @@ try {
   const rs = await call('/sync', { token, body: { tz: 'UTC', reminders: [], rules: [
     { id: 'pill', kind: 'daily', times: [hm2], c: 'SEALED-PILL' },
     { id: 'rent', kind: 'once', date: day, time: hm2, c: 'SEALED-RENT' },
+    { id: 'skipped', kind: 'daily', times: [hm2], c: 'SEALED-SKIP', skip: [soon.getTime()] },
     { id: 'bad', kind: 'weekly', c: 'x' },
   ] } });
-  assert.equal(rs.data.rules, 2, 'invalid rule kind dropped');
+  assert.equal(rs.data.rules, 3, 'invalid rule kind dropped');
   const n0 = received.length;
   for (let i = 0; i < 300 && received.length < n0 + 2; i++) await sleep(250);
   const got = received.slice(n0).map(x => x.msg);
@@ -101,7 +102,7 @@ try {
   assert.ok(Math.abs(received.at(-1).t - soon.getTime()) < 1500, 'on time');
   await sleep(2500);
   assert.equal(received.length, n0 + 2, 'each slot delivered exactly once');
-  console.log('✓ personal reminder rules delivered on time, once each, text stays sealed');
+  console.log('✓ personal reminder rules delivered on time, once each, text stays sealed; a skipped one is not sent');
 
   respondWith = 410; // phone unsubscribed
   await call('/test', { token });

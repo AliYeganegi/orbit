@@ -99,7 +99,7 @@ const Stepper = {
 const Toggle = {
   props: { modelValue: Boolean },
   emits: ['update:modelValue'],
-  template: '<button class="toggle" :class="{on: modelValue}" @click="$emit(\'update:modelValue\', !modelValue); Native.vibrate(8)"></button>',
+  template: '<button type="button" class="toggle" role="switch" :aria-checked="modelValue ? \'true\' : \'false\'" :class="{on: modelValue}" @click="$emit(\'update:modelValue\', !modelValue); Native.vibrate(8)"></button>',
 };
 
 /* Date chooser: quick chips + native picker */

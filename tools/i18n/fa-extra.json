@@ -264,5 +264,20 @@
  "Block this person?": "این آدم رو مسدود می‌کنی؟",
  "Your connection and chat end for both of you. They can't find you or send you requests, and they aren't told. You can unblock them in People settings.": "ارتباط و گفتگوتون برای هر دو تموم می‌شه. دیگه نمی‌تونه پیدات کنه یا بهت درخواست بده و بهش هم خبر داده نمی‌شه. از تنظیمات افراد می‌تونی رفع مسدودی کنی.",
  "Blocked. They won't be told": "مسدود شد. بهش خبر داده نمی‌شه",
- "Notes & weekly reviews": "یادداشت‌ها و مرورهای هفتگی"
+ "Notes & weekly reviews": "یادداشت‌ها و مرورهای هفتگی",
+ "Skip next": "رد کردن بعدی",
+ "Skipping": "رد می‌شه",
+ "Skipped": "رد شد",
+ "Undo skip": "برگردوندن",
+ "Undo {n} skips": "برگردوندن {n} مورد",
+ "in {n} min": "{n} دقیقهٔ دیگه",
+ "in {n} h {n} min": "{n} ساعت و {n} دقیقهٔ دیگه",
+ "in {n} h": "{n} ساعت دیگه",
+ "in {n} day": "{n} روز دیگه",
+ "in {n} days": "{n} روز دیگه",
+ "now": "الان",
+ "Skip the next one: {n}": "رد کردن بعدی: {n}",
+ "Show": "نمایش",
+ "Filter": "فیلتر",
+ "Turn on": "روشن کردن"
 }

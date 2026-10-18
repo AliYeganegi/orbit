@@ -33,7 +33,7 @@ const MoreView = {
     </div>
     <div class="label" style="margin-top:26px">App</div>
     <div class="settings-group">
-      <button class="list-row" style="width:100%;text-align:left" @click="go('settings')">
+      <button class="list-row row-btn" @click="go('settings')">
         <span class="bubble" style="--c:var(--muted)"><Ic n="settings" :s="18"/></span>
         <div class="grow"><div class="t">Settings</div><div class="s">Profile, theme, budget, backup</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
     </div>
@@ -202,8 +202,8 @@ const FocusView = {
 
     <Sheet :open="pick" title="What are you working on?" @close="pick = false">
       <div :style="{'--acc': 'var(--c-focus)'}">
-        <div v-if="openTasks.length" class="settings-group" style="box-shadow:none">
-          <button v-for="t in openTasks" :key="t.id" class="list-row" style="width:100%;text-align:left" @click="setLabel('task:' + t.id)">
+        <div v-if="openTasks.length" class="settings-group flat">
+          <button v-for="t in openTasks" :key="t.id" class="list-row row-btn" @click="setLabel('task:' + t.id)">
             <span class="bubble" style="--c:var(--c-tasks)"><Ic n="circle-check" :s="17"/></span><div class="grow"><div class="t" translate="no">{{ t.title }}</div><div class="s" v-if="t.due">{{ rel(t.due) }}</div></div>
             <Ic v-if="S.timer.label === 'task:' + t.id" n="check" :s="18" style="color:var(--c-focus)"/></button>
         </div>
@@ -269,7 +269,7 @@ const WaterView = {
       <div class="week-bars"><div v-for="w in week" :key="w.k" :class="{today: w.k === R.today}"><span class="v">{{ w.v || '' }}</span><i :style="{height: (w.v / max * 70) + '%', background: w.v >= goal ? 'var(--c-water)' : ''}"></i><small>{{ w.l }}</small></div></div>
     </div>
     <div class="label">Reminders</div>
-    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="ui.rem = waterRem ? {ref: waterRem} : {tpl: REM_TEMPLATES[0]}">
+    <div class="settings-group"><button class="list-row row-btn" @click="ui.rem = waterRem ? {ref: waterRem} : {tpl: REM_TEMPLATES[0]}">
       <span class="bubble" style="--c:var(--c-water)"><Ic n="bell" :s="18"/></span>
       <div class="grow"><div class="t">{{ waterRem && waterRem.on !== false ? remSummary(waterRem) : 'Water reminders are off' }}</div>
         <div class="s">{{ waterRem && waterRem.on !== false ? (waterNext.length ? 'Next at ' + hm(waterNext[0]) + (isToday(waterNext[0]) ? '' : ' ' + rel(keyOf(new Date(waterNext[0]))).toLowerCase()) : 'No upcoming reminders') : 'Get a nudge to drink through the day' }}</div></div>
@@ -378,7 +378,7 @@ const CountdownsView = {
         <span class="flabel">Repeat</span>
         <div class="seg"><button :class="{on: d.repeat === 'none'}" @click="d.repeat = 'none'">Once</button><button :class="{on: d.repeat === 'greg'}" @click="d.repeat = 'greg'">Yearly</button><button :class="{on: d.repeat === 'jal'}" @click="d.repeat = 'jal'">Yearly (Shamsi)</button></div>
         <div class="btn-row">
-          <button v-if="editing" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
+          <button v-if="editing" class="btn danger icon-only" @click="remove"><Ic n="trash-2"/></button>
           <button class="btn primary" :disabled="!d.title.trim() || !d.date" @click="save">{{ editing ? 'Save' : 'Add countdown' }}</button>
         </div>
       </div>

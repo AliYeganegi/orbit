@@ -138,20 +138,20 @@ const CycleView = {
         <div style="font-size:48px">🌸</div>
         <h2 style="font-size:20px;font-weight:750;margin-top:8px">Let's set things up</h2>
         <p class="muted" style="margin-top:6px">Start from {{ who ? who + '\\'s' : 'your' }} last period, or from when the next one is due. Predictions get smarter with every cycle you log.</p>
-        <span class="flabel" style="text-align:left">What's the goal?</span>
+        <span class="flabel" style="text-align:start">What's the goal?</span>
         <div class="goal-pick"><button v-for="x in GOALS" :key="x.id" :class="{on: cs.goal === x.id}" @click="cs.goal = x.id"><span>{{ x.e }}</span><b>{{ x.l }}</b></button></div>
-        <span class="flabel" style="text-align:left">Name (optional)</span>
+        <span class="flabel" style="text-align:start">Name (optional)</span>
         <input class="field" v-model="cs.name" placeholder="Leave empty if it's your own cycle" enterkeyhint="done">
-        <span class="flabel" style="text-align:left">Start from</span>
+        <span class="flabel" style="text-align:start">Start from</span>
         <div class="seg"><button :class="{on: startMode === 'last'}" @click="startMode = 'last'">Last period</button><button :class="{on: startMode === 'next'}" @click="startMode = 'next'">Next period</button></div>
         <template v-if="startMode === 'last'">
-          <span class="flabel" style="text-align:left">Last period started</span>
+          <span class="flabel" style="text-align:start">Last period started</span>
           <DateChip field v-model="startDate" :max="R.today" title="Last period started"/>
         </template>
         <template v-else>
-          <span class="flabel" style="text-align:left">Next period expected</span>
+          <span class="flabel" style="text-align:start">Next period expected</span>
           <DateChip field v-model="nextDate" :min="R.today" :max="addDays(R.today, cs.len)" title="Next period expected"/>
-          <div class="list-row" style="text-align:left;padding:14px 2px 0;border:0"><div class="grow"><div class="t">Usual cycle length</div><div class="s">Used to estimate where you are now</div></div><Stepper v-model="cs.len" :min="20" :max="45" unit="d"/></div>
+          <div class="list-row" style="text-align:start;padding:14px 2px 0;border:0"><div class="grow"><div class="t">Usual cycle length</div><div class="s">Used to estimate where you are now</div></div><Stepper v-model="cs.len" :min="20" :max="45" unit="d"/></div>
         </template>
         <button class="btn primary block" style="margin-top:20px" @click="logStart">Start tracking</button>
       </div>
@@ -329,7 +329,7 @@ const CycleView = {
             <DateChip v-model="cs.expected" :min="R.today" :max="addDays(R.today, cs.len)" title="Next period expected"/></div>
         </div>
         <div class="label">Reminders</div>
-        <div class="settings-group" style="box-shadow:none">
+        <div class="settings-group flat">
           <div class="list-row"><div class="grow"><div class="t">Period coming</div><div class="s">2 days before and on the expected day</div></div><Toggle v-model="cs.notify"/></div>
           <div class="list-row"><div class="grow"><div class="t">Fertile window & ovulation</div><div class="s">When the fertile window starts and on ovulation day</div></div><Toggle v-model="cs.fertileNotify"/></div>
           <div class="list-row"><div class="grow"><div class="t">Daily tip</div><div class="s">{{ cs.tip.on ? 'A new suggestion every day at ' + cs.tip.time : 'A kind, phase-based suggestion each day' }}</div></div><Toggle v-model="cs.tip.on"/></div>
@@ -338,7 +338,7 @@ const CycleView = {
           <div v-if="cs.pill.on" class="list-row"><div class="grow"><div class="t">Pill time</div></div><TimeChip v-model="cs.pill.time" title="Pill time"/></div>
         </div>
         <div class="label">Privacy</div>
-        <div class="settings-group" style="box-shadow:none">
+        <div class="settings-group flat">
           <div class="list-row"><div class="grow"><div class="t">Show on Today screen</div><div class="s">Turn off to keep cycle info out of sight</div></div><Toggle v-model="cs.showToday"/></div>
         </div>
         <button v-if="S.cycleDays.length || Object.keys(S.cycleLog).length || cs.expected" class="btn danger block" style="margin-top:18px" @click="S.cycleDays.splice(0); S.cycleLog = {}; cs.expected = ''; cfg = false; say('Cycle data cleared')">Clear all cycle data</button>

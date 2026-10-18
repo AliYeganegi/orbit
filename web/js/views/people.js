@@ -87,21 +87,21 @@ const PeopleView = {
         <h2 style="font-size:20px;font-weight:750;margin-top:8px">Closer, one question a day</h2>
         <p class="muted" style="margin-top:6px;font-size:14.5px">Connect with your partner, friends or family. Each day you both answer the same question, and you only see their answer after sending yours.</p>
         <template v-if="!f.keyMode">
-          <span class="flabel" style="text-align:left">Pick your look</span>
+          <span class="flabel" style="text-align:start">Pick your look</span>
           <EmojiPick v-model="f.emoji" :list="AVATARS" chips/>
-          <span class="flabel" style="text-align:left">Your name</span>
+          <span class="flabel" style="text-align:start">Your name</span>
           <input class="field" v-model="f.name" placeholder="How friends see you" maxlength="40" enterkeyhint="next">
-          <span class="flabel" style="text-align:left">Choose your ID</span>
-          <label class="field row" style="text-align:left"><span class="muted" style="font-weight:700">@</span><input class="grow" v-model="f.handle" placeholder="e.g. ali.y" maxlength="21" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" @keydown.enter="handleOk && signup()" style="background:none;border:0;outline:none;font-size:16px;padding:0;min-width:0"></label>
-          <div class="muted" style="font-size:12.5px;text-align:left;margin:6px 4px 0">Others find you by this ID. 3–20 letters, numbers, dots or underscores.</div>
+          <span class="flabel" style="text-align:start">Choose your ID</span>
+          <label class="field row" style="text-align:start"><span class="muted" style="font-weight:700">@</span><input class="grow" v-model="f.handle" placeholder="e.g. ali.y" maxlength="21" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" @keydown.enter="handleOk && signup()" style="background:none;border:0;outline:none;font-size:16px;padding:0;min-width:0"></label>
+          <div class="muted" style="font-size:12.5px;text-align:start;margin:6px 4px 0">Others find you by this ID. 3–20 letters, numbers, dots or underscores.</div>
           <div v-if="f.err" class="form-err">{{ f.err }}</div>
           <button class="btn primary block" style="margin-top:18px" :disabled="!handleOk || f.busy" @click="signup">{{ f.busy ? 'Creating…' : 'Create my ID' }}</button>
           <button class="link-btn" style="margin-top:12px" @click="f.keyMode = true; f.err = ''">Already have an ID? Sign in with your key</button>
         </template>
         <template v-else>
-          <span class="flabel" style="text-align:left">Login key</span>
+          <span class="flabel" style="text-align:start">Login key</span>
           <textarea class="field" v-model="f.key" placeholder="yourid:…" style="min-height:76px;font-family:monospace;font-size:13px" autocapitalize="none" spellcheck="false"></textarea>
-          <div class="muted" style="font-size:12.5px;text-align:left;margin:6px 4px 0">Copy it from People → settings on your other phone.</div>
+          <div class="muted" style="font-size:12.5px;text-align:start;margin:6px 4px 0">Copy it from People → settings on your other phone.</div>
           <div v-if="f.err" class="form-err">{{ f.err }}</div>
           <button class="btn primary block" style="margin-top:18px" :disabled="!f.key.trim() || f.busy" @click="signin">{{ f.busy ? 'Signing in…' : 'Sign in' }}</button>
           <button class="link-btn" style="margin-top:12px" @click="f.keyMode = false; f.err = ''">Create a new ID instead</button>
@@ -151,10 +151,10 @@ const PeopleView = {
 
       <div class="label">Connections</div>
       <div v-if="list.length" class="settings-group">
-        <button v-for="x in list" :key="x.p.id" class="list-row" style="width:100%;text-align:left" @click="open(x.p)">
+        <button v-for="x in list" :key="x.p.id" class="list-row row-btn" @click="open(x.p)">
           <span class="av">{{ x.p.with.emoji || '🙂' }}</span>
           <div class="grow"><div class="t">{{ whoName(x.p.with) }} <span v-if="x.p.type" class="rel-tag">{{ REL[x.p.type].e }} {{ REL[x.p.type].l }}</span></div>
-            <div class="s" :class="{hot: x.line.hot}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ x.line.t }}</div></div>
+            <div class="s ellipsis" :class="{hot: x.line.hot}">{{ x.line.t }}</div></div>
           <span v-if="x.p.unread" class="badge unread">{{ x.p.unread }}</span>
           <span v-else-if="x.line.hot" class="dot" style="background:var(--c-people)"></span>
         </button>
@@ -181,22 +181,22 @@ const PeopleView = {
         <input class="field" v-model="prof.name" maxlength="40" enterkeyhint="done">
         <button class="btn primary block" style="margin-top:14px" :disabled="!prof.name.trim()" @click="saveProfile">Save</button>
         <div class="label">Your ID on another phone</div>
-        <div class="settings-group" style="box-shadow:none">
-          <button class="list-row" style="width:100%;text-align:left" @click="shareText(Soc.acct.token, 'Login key copied. Keep it private')">
+        <div class="settings-group flat">
+          <button class="list-row row-btn" @click="shareText(Soc.acct.token, 'Login key copied. Keep it private')">
             <span class="bubble" style="--c:var(--c-people)"><Ic n="key-round" :s="18"/></span>
             <div class="grow"><div class="t">Copy login key</div><div class="s">Anyone with this key can read your chats. Keep it private</div></div></button>
-          <button class="list-row" style="width:100%;text-align:left" @click="menu = false; socSignOut('Signed out. Use your login key to sign back in')">
+          <button class="list-row row-btn" @click="menu = false; socSignOut('Signed out. Use your login key to sign back in')">
             <span class="bubble" style="--c:var(--muted)"><Ic n="log-out" :s="18"/></span>
             <div class="grow"><div class="t">Sign out on this phone</div><div class="s">Copy your login key first, or you can't get back in</div></div></button>
-          <button class="list-row" style="width:100%;text-align:left" @click="rotateAsk = true">
+          <button class="list-row row-btn" @click="rotateAsk = true">
             <span class="bubble" style="--c:var(--c-mood)"><Ic n="lock" :s="18"/></span>
             <div class="grow"><div class="t">Sign out other phones</div><div class="s">Makes a new login key. Phones using the old one are signed out</div></div></button>
-          <button class="list-row" style="width:100%;text-align:left" @click="del = true">
+          <button class="list-row row-btn" @click="del = true">
             <span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
             <div class="grow"><div class="t" style="color:var(--c-danger)">Delete my ID</div><div class="s">Removes all your connections and conversations</div></div></button>
         </div>
         <div class="label">Blocked</div>
-        <div class="settings-group" style="box-shadow:none">
+        <div class="settings-group flat">
           <div v-for="h in blocks" :key="h" class="list-row"><div class="grow"><div class="t" translate="no">@{{ h }}</div><div class="s">Can't find you or send you requests</div></div>
             <button class="btn sm" @click="unblock(h)">Unblock</button></div>
           <div v-if="!blocks.length" class="list-row"><div class="grow s muted">No one is blocked</div></div>
@@ -209,7 +209,7 @@ const PeopleView = {
     </Sheet>
     <Sheet :open="del" title="Delete your ID?" @close="del = false">
       <p class="muted">Your connections, chats and answers will be deleted for everyone. This can't be undone.</p>
-      <div class="btn-row"><button class="btn" @click="del = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="deleteAccount">Delete</button></div>
+      <div class="btn-row"><button class="btn" @click="del = false">Cancel</button><button class="btn destructive" @click="deleteAccount">Delete</button></div>
     </Sheet>
   </div>`,
 };
@@ -580,15 +580,15 @@ const PairView = {
     </Sheet>
     <Sheet :open="!!delAsk" title="Delete message?" @close="delAsk = null">
       <p class="muted">It will be removed for both of you{{ delAsk && delAsk.media ? ', photo included' : '' }}.</p>
-      <div class="btn-row"><button class="btn" @click="delAsk = null">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="confirmDelete">Delete</button></div>
+      <div class="btn-row"><button class="btn" @click="delAsk = null">Cancel</button><button class="btn destructive" @click="confirmDelete">Delete</button></div>
     </Sheet>
     <Sheet :open="blockAsk" title="Block this person?" @close="blockAsk = false">
       <p class="muted">Your connection and chat end for both of you. They can't find you or send you requests, and they aren't told. You can unblock them in People settings.</p>
-      <div class="btn-row"><button class="btn" @click="blockAsk = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="block">Block</button></div>
+      <div class="btn-row"><button class="btn" @click="blockAsk = false">Cancel</button><button class="btn destructive" @click="block">Block</button></div>
     </Sheet>
     <Sheet :open="leaveAsk" title="Remove connection?" @close="leaveAsk = false">
       <p class="muted">Your chat and all your answers with {{ nm }} will be deleted for both of you.</p>
-      <div class="btn-row"><button class="btn" @click="leaveAsk = false">Cancel</button><button class="btn" style="background:var(--c-danger);color:#fff" @click="leave">Remove</button></div>
+      <div class="btn-row"><button class="btn" @click="leaveAsk = false">Cancel</button><button class="btn destructive" @click="leave">Remove</button></div>
     </Sheet>
   </div>`,
 };

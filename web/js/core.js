@@ -70,6 +70,14 @@ function words(n) {
 const mmss = s => pad(Math.floor(s / 60)) + ':' + pad(s % 60);
 const hm = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const isToday = ms => keyOf(new Date(ms)) === R.today;
+/** How long until a moment, to the minute: "in 5 min", "in 2 h 10 min", "in 3 days". */
+function inLabel(ms) {
+  const min = Math.round((ms - R.min) / 60e3);
+  if (min < 1) return 'now';
+  if (min < 60) return 'in ' + min + ' min';
+  if (min < 24 * 60) { const h = Math.floor(min / 60), m = min % 60; return m ? 'in ' + h + ' h ' + m + ' min' : 'in ' + h + ' h'; }
+  const d = Math.round(min / 1440); return d === 1 ? 'in 1 day' : 'in ' + d + ' days';
+}
 const whenShort = ms => { if (!ms) return ''; const r = isToday(ms) ? 'today' : rel(keyOf(new Date(ms))); return (r === 'Tomorrow' ? 'tomorrow' : r) + ' ' + hm(ms); };
 const everyLabel = m => (m < 60 ? m + ' min' : +(m / 60).toFixed(1) + ' h');
 

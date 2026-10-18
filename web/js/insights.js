@@ -135,13 +135,15 @@ window.orbitBeforeReload = () => {
   saveNow(); saveChatCache();
   const drafts = {};
   for (const k of Object.keys(Drafts)) { try { const x = Drafts[k](); if (x) drafts[k] = x; } catch (e) {} }
-  try { sessionStorage.setItem('orbit.resume', JSON.stringify({ tab: nav.tab, screen: nav.screen, open: Soc.open, drafts, at: Date.now() })); } catch (e) {}
+  try { sessionStorage.setItem('orbit.resume', JSON.stringify({ tab: nav.tab, plan: nav.plan, screen: nav.screen, arg: nav.arg, open: Soc.open, drafts, at: Date.now() })); } catch (e) {}
 };
 try {
   const r = JSON.parse(sessionStorage.getItem('orbit.resume'));
   sessionStorage.removeItem('orbit.resume');
   if (r && Date.now() - r.at < 60e3 && S.settings.onboarded) {
-    nav.tab = r.tab || 'today'; Soc.open = r.open; nav.screen = r.screen; setTimeout(() => say('Orbit was updated ✨'), 600);
+    nav.tab = r.tab || 'today'; nav.plan = r.plan === 'reminders' ? 'reminders' : 'tasks'; Soc.open = r.open;
+    go(r.screen === 'pair' ? 'pair:' + r.open : r.screen ? r.screen + (r.arg ? ':' + r.arg : '') : null);
+    setTimeout(() => say('Orbit was updated ✨'), 600);
     // reopen whatever was being edited, with what had been typed
     const dr = r.drafts || {}, byId = (list, id) => (id ? list.find(x => x.id === id) : null);
     setTimeout(() => {

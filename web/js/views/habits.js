@@ -77,7 +77,7 @@ const HabitsView = {
         </div>
         </Swipe>
       </TransitionGroup>
-      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:18px">{{ managing ? 'Delete with − · reorder with the arrows' : 'Tap a habit to edit · swipe left to delete · Edit to reorder' }}</p>
+      <p class="foot-hint">{{ managing ? 'Delete with − · reorder with the arrows' : 'Tap a habit to edit · swipe left to delete · Edit to reorder' }}</p>
     </template>
     <Empty v-else e="🌱" t="Build your first habit" s="Track daily wins and watch your streaks grow.">
       <button class="btn primary" @click="openNew"><Ic n="plus" :s="18"/>New habit</button></Empty>
@@ -109,7 +109,7 @@ const HabitsView = {
         <span class="flabel">Color</span>
         <div class="swatches"><button v-for="c in HABIT_COLORS" :key="c" :style="{'--c': c}" :class="{on: d.color === c}" @click="d.color = c"></button></div>
         <div class="btn-row">
-          <button v-if="editing" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
+          <button v-if="editing" class="btn danger icon-only" @click="remove"><Ic n="trash-2"/></button>
           <button class="btn primary" :disabled="!d.name.trim()" @click="save">{{ editing ? 'Save' : 'Create habit' }}</button>
         </div>
       </div>

@@ -58,7 +58,7 @@ const TaskSheet = {
           <Ic n="flag" :s="15" :style="{color: p.c}"/>{{ p.l }}</button>
       </div>
       <div class="btn-row">
-        <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
+        <button v-if="isEdit" class="btn danger icon-only" @click="remove"><Ic n="trash-2"/></button>
         <button class="btn primary" @click="save">{{ isEdit ? 'Save changes' : 'Add task' }}</button>
       </div>
     </div>
@@ -195,7 +195,7 @@ const TxSheet = {
       <DatePick v-model="d.date" :none="false" past/>
       <div v-if="need === 'future'" class="hint warn"><span class="grow">The date can't be in the future</span></div>
       <div class="btn-row">
-        <button v-if="isEdit" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove"><Ic n="trash-2"/></button>
+        <button v-if="isEdit" class="btn danger icon-only" @click="remove"><Ic n="trash-2"/></button>
         <button class="btn primary" @click="save">{{ d.pending ? 'Save' : isEdit ? 'Save changes' : (d.type === 'in' ? 'Add income' : 'Add expense') }}</button>
       </div>
     </div>
@@ -227,8 +227,8 @@ const AccountsSheet = {
     <div style="--acc:var(--c-money)">
       <template v-if="!edit">
         <p class="muted" style="font-size:13.5px;margin:-2px 2px 12px">Set each balance to what your bank shows. Orbit then adds and subtracts your transactions, and bank SMS update it automatically.</p>
-        <div class="settings-group" style="box-shadow:none">
-          <button v-for="a in S.accounts" :key="a.id" class="list-row" style="width:100%;text-align:left" @click="open(a)">
+        <div class="settings-group flat">
+          <button v-for="a in S.accounts" :key="a.id" class="list-row row-btn" @click="open(a)">
             <span class="bubble" style="--c:var(--c-money)"><Ic n="wallet" :s="18"/></span>
             <div class="grow"><div class="t" translate="no">{{ a.name }}</div><div class="s">{{ a.at ? (a.src === 'sms' ? 'Updated from bank SMS ' : 'Set by you ') + ago(a.at).toLowerCase() : 'Tap to set the balance' }}</div>
               <div v-if="a.suggest" class="suggest" @click.stop>Bank SMS says {{ fmt(a.suggest.v) }} <button class="btn sm" @click="a.balance = a.suggest.v; a.at = a.suggest.at; delete a.suggest; say('Balance updated from the bank')">Use it</button><button class="btn sm" @click="delete a.suggest">Ignore</button></div></div>
@@ -243,7 +243,7 @@ const AccountsSheet = {
         <span class="flabel">Current balance</span>
         <div class="amount-in" style="padding-top:0"><input v-model="balStr" inputmode="numeric" placeholder="0" enterkeyhint="done" @keydown.enter="save"><div class="u">{{ f.bal ? words(Math.abs(f.bal)) : 'Toman, as your bank shows it right now' }}</div></div>
         <div class="btn-row">
-          <button v-if="edit !== 'new'" class="btn danger" style="flex:0 0 56px;padding:0" @click="remove" aria-label="Delete account"><Ic n="trash-2"/></button>
+          <button v-if="edit !== 'new'" class="btn danger icon-only" @click="remove" aria-label="Delete account"><Ic n="trash-2"/></button>
           <button class="btn" style="flex:0 0 auto" @click="edit = null">Back</button>
           <button class="btn primary" @click="save">Save</button>
         </div>

@@ -89,7 +89,7 @@ const SettingsView = {
     </div>
 
     <div class="label">Notifications</div>
-    <div class="settings-group"><button class="list-row" style="width:100%;text-align:left" @click="go('alerts')">
+    <div class="settings-group"><button class="list-row row-btn" @click="go('alerts')">
       <span class="bubble" style="--c:var(--c-focus)"><Ic n="bell" :s="18"/></span>
       <div class="grow"><div class="t">Notifications</div><div class="s">{{ remReady ? 'On · tasks, water, focus & cycle' : 'Off · tap to set up' }}</div></div>
       <span class="dot" :style="{background: remReady ? 'var(--c-habits)' : 'var(--c-focus)'}"></span><Ic n="chevron-right" :s="18" class="muted"/></button></div>
@@ -108,20 +108,20 @@ const SettingsView = {
 
     <div class="label">Your data</div>
     <div class="settings-group">
-      <button class="list-row" style="width:100%;text-align:left" @click="exp = true"><span class="bubble" style="--c:var(--c-water)"><Ic n="upload" :s="18"/></span>
+      <button class="list-row row-btn" @click="exp = true"><span class="bubble" style="--c:var(--c-water)"><Ic n="upload" :s="18"/></span>
         <div class="grow"><div class="t">Export backup</div><div class="s">A file you keep somewhere safe. Choose what goes in it</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
-      <button class="list-row" style="width:100%;text-align:left" @click="openImport"><span class="bubble" style="--c:var(--c-habits)"><Ic n="download" :s="18"/></span>
+      <button class="list-row row-btn" @click="openImport"><span class="bubble" style="--c:var(--c-habits)"><Ic n="download" :s="18"/></span>
         <div class="grow"><div class="t">Restore backup</div><div class="s">You'll see what's in it before anything changes</div></div><Ic n="chevron-right" :s="18" class="muted"/></button>
-      <button v-if="undoAt" class="list-row" style="width:100%;text-align:left" @click="undoLast"><span class="bubble" style="--c:var(--c-mood)"><Ic n="undo-2" :s="18"/></span>
+      <button v-if="undoAt" class="list-row row-btn" @click="undoLast"><span class="bubble" style="--c:var(--c-mood)"><Ic n="undo-2" :s="18"/></span>
         <div class="grow"><div class="t">Undo last restore or erase</div><div class="s">Bring back your data as it was {{ ago(undoAt).toLowerCase() }}</div></div></button>
-      <button class="list-row" style="width:100%;text-align:left" @click="reset = true"><span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
+      <button class="list-row row-btn" @click="reset = true"><span class="bubble" style="--c:var(--c-danger)"><Ic n="trash-2" :s="18"/></span>
         <div class="grow"><div class="t" style="color:var(--c-danger)">Erase everything</div><div class="s">{{ counts }} items stored on this phone</div></div></button>
     </div>
-    <p class="muted" style="text-align:center;font-size:12.5px;margin-top:26px">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · {{ Soc.acct ? 'Everything except People stays on your device' : 'Everything stays on your device' }} 🔒</p>
+    <p class="foot-hint">Orbit {{ APP_VERSION }} · {{ Native.has ? 'Android' : IOS ? 'iPhone' : 'Web' }} · {{ Soc.acct ? 'Everything except People stays on your device' : 'Everything stays on your device' }} 🔒</p>
 
     <Sheet :open="exp" title="Export backup" @close="exp = false">
       <p class="muted" style="font-size:14px;margin-bottom:12px">Choose what to include. The file contains private data (money, health), so keep it somewhere only you can open.</p>
-      <div class="settings-group" style="box-shadow:none">
+      <div class="settings-group flat">
         <label v-for="m in MODS" :key="m.id" class="list-row" style="cursor:pointer"><div class="grow"><div class="t">{{ m.l }}</div></div>
           <input type="checkbox" class="check" :value="m.id" v-model="pick"></label>
       </div>
@@ -148,12 +148,12 @@ const SettingsView = {
         <div v-if="prev.empty" class="hint warn"><span class="grow">This backup has no data in it.</span></div>
         <p class="muted" style="font-size:13.5px;margin-top:12px">The parts listed above will replace what's on this phone. Everything else stays as it is. A safety copy of your current data is kept so you can undo.</p>
         <div v-if="err" class="hint warn"><Ic n="circle-alert" :s="16"/><span class="grow">{{ err }}</span></div>
-        <div class="btn-row"><button class="btn" @click="prev = null">Back</button><button class="btn danger" style="background:var(--c-danger);color:#fff" @click="doRestore">Replace with backup</button></div>
+        <div class="btn-row"><button class="btn" @click="prev = null">Back</button><button class="btn destructive" @click="doRestore">Replace with backup</button></div>
       </template>
     </Sheet>
     <Sheet :open="reset" title="Erase everything?" @close="reset = false">
       <p class="muted">All tasks, habits, notes, transactions, cycle and other logs on this phone will be deleted. Your People account and chats on the server are not affected. You can undo right after, but export a backup first if you want to be safe.</p>
-      <div class="btn-row"><button class="btn" @click="reset = false; exp = true">Export first</button><button class="btn danger" style="background:var(--c-danger);color:#fff" @click="resetAll">Erase</button></div>
+      <div class="btn-row"><button class="btn" @click="reset = false; exp = true">Export first</button><button class="btn destructive" @click="resetAll">Erase</button></div>
     </Sheet>
   </div>`,
 };

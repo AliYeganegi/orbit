@@ -102,7 +102,7 @@ const NotificationsView = {
 
     <div class="label">Personal reminders</div>
     <div class="settings-group">
-      <button class="list-row" style="width:100%;text-align:left" @click="go('reminders')">
+      <button class="list-row row-btn" @click="go('reminders')">
         <span class="bubble" style="--c:var(--c-mood)"><Ic n="bell" :s="18"/></span>
         <div class="grow"><div class="t">Reminders</div><div class="s">{{ S.reminders.length ? S.reminders.filter(r => r.on !== false).length + ' active · water, medicine, anything you set' : 'Water, medicine, stretching, bills…' }}</div></div>
         <Ic n="chevron-right" :s="18" class="muted"/></button>
@@ -132,7 +132,7 @@ const NotificationsView = {
     <div class="settings-group">
       <div v-for="u in upcoming" :key="u.id" class="list-row">
         <span class="bubble" :style="{'--c': ICON[u.ch][1]}"><Ic :n="ICON[u.ch][0]" :s="17"/></span>
-        <div class="grow" style="min-width:0"><div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ u.title.replace(/^\\W+\\s/, '') }}</div><div class="s">{{ whenLabel(u.at) }}</div></div>
+        <div class="grow" style="min-width:0"><div class="t ellipsis">{{ u.title.replace(/^\\W+\\s/, '') }}</div><div class="s">{{ whenLabel(u.at) }}</div></div>
       </div>
       <div v-if="!upcoming.length" class="list-row"><div class="grow muted" style="font-size:14px">Nothing scheduled. Add a reminder to a task or turn on water reminders.</div></div>
     </div>

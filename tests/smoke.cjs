@@ -100,7 +100,7 @@ const harvest = async page => {
   await G(`window.orbitBack()`);
 
   // reminders: water is one, add from template, custom daily with two times, validation, pause, delete
-  await step('reminders screen', () => G(`g.nav.screen = 'reminders'`));
+  await step('reminders screen', () => G(`g.go('reminders')`));
   assert.ok(await p.evaluate(() => S.reminders.some(r => r.water)), 'drink water is a reminder');
   await step('template picker', () => p.click('.fab'));
   await step('add from template', async () => { await p.click('.tpl-grid .tpl >> nth=0'); await p.click('.sheet .btn.primary'); });

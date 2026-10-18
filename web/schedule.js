@@ -7,7 +7,8 @@
  *   date 'YYYY-MM-DD' (once), time 'HH:MM' (once, monthly), times ['HH:MM'] (daily),
  *   every minutes, start 'HH:MM', end 'HH:MM' (interval), days [0-6, Sunday = 0] (daily, interval),
  *   dom 1-31 + cal 'greg' | 'jal' (monthly), until 'YYYY-MM-DD' | '' (last day, inclusive),
- *   stopAtGoal + goalDay 'YYYY-MM-DD' (water: skip the rest of a day once the goal is reached)
+ *   stopAtGoal + goalDay 'YYYY-MM-DD' (water: skip the rest of a day once the goal is reached),
+ *   skip [ms] (single occurrences the person chose to skip; the next ones still come)
  * }
  * A rule without `kind` is the legacy water rule ({ on, every, start, end, days, ... }).
  */
@@ -50,7 +51,8 @@
     const out = [];
     if (!rule || rule.on === false) return out;
     const kind = rule.kind || 'interval';
-    const push = at => { if (at > from && !out.includes(at)) out.push(at); };
+    const skip = Array.isArray(rule.skip) ? rule.skip : [];
+    const push = at => { if (at > from && !out.includes(at) && !skip.includes(at)) out.push(at); };
     const ok = p => (!rule.until || dayKey(p) <= rule.until);
 
     if (kind === 'once') {

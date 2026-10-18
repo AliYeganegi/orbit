@@ -277,9 +277,16 @@ final class Scheduler {
                 if (!(dm[0] == want || (dm[1] == 1 && dm[0] < want))) continue;
                 slots.add(toMin(r.optString("time")));
             }
-            for (int t : slots) { long ms = at(d, t); if (ms > from) return ms; }
+            for (int t : slots) { long ms = at(d, t); if (ms > from && !skipped(r, ms)) return ms; }
         }
         return -1;
+    }
+
+    /** Occurrences the person skipped in the app ("skip next"): the rule moves on to the one after. */
+    private static boolean skipped(JSONObject r, long ms) {
+        JSONArray s = r.optJSONArray("skip");
+        if (s != null) for (int i = 0; i < s.length(); i++) if (s.optLong(i) == ms) return true;
+        return false;
     }
 
     private static boolean contains(JSONArray a, int v) {
