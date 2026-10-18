@@ -38,7 +38,7 @@ import java.util.Iterator;
  */
 final class WebUpdate {
     static final String BASE = "https://aliyeganegi.github.io/orbit/";
-    private static final String PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7z/RQtxuRcscq+n/LZPmp+ieDjvX2+HsVeojWeYx0KWYUx4w5uQka3BJTQiOBiCb/6J2xrSj8KbFI2ehl9frlQ==";
+    private static final String PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYlaDJ24sR+//DaIP4+yjnqGZuQqGzO1k6iTsOqycmRYC5TdIk54F1mJPTjZa1BwyKd4EIDYpkZT6Ow8rQgAH7A==";
     private static final String PREFS = "orbit_update";
     private static final long MAX_FILE = 8L << 20, MAX_APK = 64L << 20;
 

@@ -8,9 +8,9 @@ SDK="${ANDROID_HOME:-$HOME/Android/Sdk}"
 BT="$SDK/build-tools/34.0.0"
 JAR="$SDK/platforms/android-34/android.jar"
 VERSION_CODE="${VERSION_CODE:-1}"
-# The installed id. 1.21 moved from me.ali.orbit to me.ali.orbitapp: the original signing key was lost, and Android only
-# updates an app signed with the same key, so the new app installs next to the old one and data moves over by backup.
-APP_ID="${APP_ID:-me.ali.orbitapp}"
+# The installed app id. Keep it, and keep signing with ~/.android/orbit.keystore (certificate a309d322…bec0):
+# Android only updates an app in place when both match.
+APP_ID="${APP_ID:-me.ali.orbit}"
 VERSION_NAME="${VERSION_NAME:-$(grep -oP "const APP_VERSION = '\K[^']+" ../web/app.js)}"
 # DEBUG=1 makes the WebView inspectable over adb (chrome://inspect); never ship it
 

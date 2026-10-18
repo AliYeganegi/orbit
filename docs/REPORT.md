@@ -45,11 +45,9 @@ Shared memories, insights, calendar, voice capture: `docs/PHASE4.md`.
 
 ### Resolved: Android signing
 
-The original keystore (certificate `a309d322…bec0`) and update key were lost. 1.21 uses a new app id
-(`me.ali.orbitapp`), this machine's keystore (`ee8e3ad9…7451`) and a new update key (`~/.config/orbit/update-key.pem`),
-so it installs next to the old app and data moves over through a backup. A 1.20-format backup restoring
-completely into the new app is covered by `tests/data.cjs` step 10. Back up both keys: losing them again means
-another move.
+The original keystore (certificate `a309d322…bec0`) and update key were recovered. 1.21 keeps the app id `me.ali.orbit`,
+installs over the existing app, and its screen updates are accepted by installed apps. Keys generated during the search
+are kept unused as `~/.android/orbit-unused-ee8e3ad9.keystore` and `~/.config/orbit/update-key-unused-2026-10-17.pem`.
 
 ## Open findings from the audit
 
@@ -84,10 +82,8 @@ cd android && VERSION_CODE=27 ./build.sh        # needs JDK 17, Android SDK plat
 
 ## Next steps
 
-1. Deploy the server (`cd push && npx wrangler deploy`) and push `main` (iPhone/web), if not done yet.
-2. Install `Orbit-1.21.apk` (app id `me.ali.orbitapp`) next to the old app and move your data with a backup.
+1. Done: server deployed, `main` pushed (iPhone/web live as 1.21).
+2. Open Orbit on Android: the 1.21 screens arrive by themselves; tap "Orbit 1.21 is available" to install the APK in place.
 3. On the phone: check the new SMS parser against the real inbox, Persian water notifications, and
    Notifications → Reliability check.
-4. Optionally publish the APK as a GitHub release and announce it with
-   `node tools/release.mjs --apk android/build/Orbit.apk --code 28 --name 1.21 --url <asset url>`, so later APKs can be
-   offered inside the app.
+4. The 1.21 APK is published (GitHub release v1.21) and announced in the update manifest.

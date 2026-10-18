@@ -43,13 +43,10 @@ VERSION_CODE=3 VERSION_NAME=1.2 ./build.sh
 adb install -r build/Orbit.apk
 ```
 
-Keep the signing key (`~/.android/orbit.keystore`, certificate SHA-256 `ee8e3ad9…7451`) backed up; a different key
-forces an uninstall, which erases app data.
-
-From 1.21 the app id is `me.ali.orbitapp`. Versions up to 1.20 (`me.ali.orbit`) were signed with a key that was lost,
-so they can't be updated in place: install 1.21 next to the old app, export a backup in the old app (Settings → Export),
-restore it in the new one (Settings → Restore backup → paste or choose file), copy the People login key across if you
-use People, check everything is there, then uninstall the old app.
+Keep the signing key (`~/.android/orbit.keystore`, certificate SHA-256 `a309d322…bec0`) and the update key
+(`~/.config/orbit/update-key.pem`) backed up. Android only updates the installed app (`me.ali.orbit`) with an APK signed
+by that keystore, and the app only accepts screen updates signed by that update key; without them every user would have
+to reinstall and lose their data.
 
 ### Android updates without reinstalling
 
@@ -64,7 +61,7 @@ From 1.11 the Android app updates itself like the iPhone version:
   The app shows "Orbit 1.12 is available"; one tap downloads it, checks its hash and opens Android's installer.
 - If new screens need new native features, pass `--min-native <versionCode>`: older APKs keep their screens until updated.
 
-Updates are only accepted when `web/update/manifest.json` is signed with `~/.config/orbit/update-key.pem` (P-256, new in 1.21,
+Updates are only accepted when `web/update/manifest.json` is signed with `~/.config/orbit/update-key.pem` (P-256,
 public half in `WebUpdate.java`). Keep that key private and backed up; without it no update can reach the app.
 
 ## Updating the iPhone version
