@@ -1,5 +1,5 @@
 {
- "build": 20,
+ "build": 21,
  "version": "1.22",
  "minNative": 21,
  "files": {
@@ -36,10 +36,10 @@
   "vue.js": "c459ba7cc8db65c982589fa5d64c7ff478877e8e5b0fd75683207cec6a4e89e8"
  },
  "native": {
-  "code": 29,
-  "name": "1.21",
-  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.21/Orbit-1.21.apk",
-  "sha256": "f342bd2f7441fe2c80e021cc24367ec55794cf6ac0c335f380e2c0977b04463f",
-  "size": 366275
+  "code": 30,
+  "name": "1.22",
+  "url": "https://github.com/AliYeganegi/orbit/releases/download/v1.22/Orbit-1.22.apk",
+  "sha256": "b34a89bf2a61dae39b51db6b22e2e3a4bf44561e7368e7c7adc6467d9948f4f8",
+  "size": 388213
  }
 }
